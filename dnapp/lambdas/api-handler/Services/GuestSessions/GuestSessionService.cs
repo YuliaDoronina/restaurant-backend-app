@@ -7,6 +7,7 @@ using APIHandler.Exceptions;
 using APIHandler.Mappers;
 using APIHandler.Models.GuestSessions;
 using APIHandler.Models.Orders;
+using APIHandler.Models.Reservations;
 using APIHandler.Repositories.Auth;
 using APIHandler.Repositories.Dishes;
 using APIHandler.Repositories.GroupReservations;
@@ -31,6 +32,8 @@ public class GuestSessionService(
     IUserRepository userRepository,
     ITableRepository tableRepository) : IGuestSessionService
 {
+    private const string OwnerSessionNotFoundMessage = "Owner session not found for this reservation";
+
     public async Task<bool> IsAuthorizedAsync(string guestSessionToken, string guestSessionId)
     {
         string hash = Convert.ToBase64String(SHA256.HashData(Convert.FromBase64String(guestSessionToken)));
@@ -75,7 +78,7 @@ public class GuestSessionService(
             Dishes = [],
         };
 
-        await guestSessionRepository.SaveAsync(session);
+        await guestSessionRepository.SaveCartAsync(session);
 
         return new CreatGuestSessionResponse(session.Id, Convert.ToBase64String(tokenBytes));
     }
@@ -132,7 +135,7 @@ public class GuestSessionService(
             });
         }
 
-        await guestSessionRepository.SaveAsync(session);
+        await guestSessionRepository.SaveCartAsync(session);
     }
 
     public async Task RemoveDishAsync(string guestSessionId, string dishId, int quantity)
@@ -155,7 +158,7 @@ public class GuestSessionService(
             session.Dishes.Remove(existingDish);
         }
 
-        await guestSessionRepository.SaveAsync(session);
+        await guestSessionRepository.SaveCartAsync(session);
     }
 
     public async Task<GroupReservationStatusResponse> GetGroupReservationStatusAsync(string groupReservationId)
@@ -327,7 +330,7 @@ public class GuestSessionService(
         await ValidateDishesAsync(guestSession.Dishes);
 
         guestSession.IsSubmitted = true;
-        await guestSessionRepository.SaveAsync(guestSession);
+        await guestSessionRepository.SaveCartAsync(guestSession);
     }
 
     private async Task<GroupReservation> GetGroupReservationAndValidateAsync(string groupReservationId)
@@ -357,7 +360,7 @@ public class GuestSessionService(
         if (group.Status == GroupReservationStatus.Closed)
             throw new GroupReservationExpiredException();
 
-        if (group.Status == GroupReservationStatus.Submitted)
+        if (group.Status is GroupReservationStatus.Submitted or GroupReservationStatus.Submitting)
             throw new GroupReservationSubmittedException();
     }
 
@@ -426,7 +429,7 @@ public class GuestSessionService(
             OwnerUserId = userId,
         };
 
-        await guestSessionRepository.SaveAsync(session);
+        await guestSessionRepository.SaveCartAsync(session);
     }
 
     public async Task<GetGuestSessionResponse> GetGuestSessionInfoAsync(string guestSessionId)
@@ -461,5 +464,28 @@ public class GuestSessionService(
         }
 
         return new GetGuestSessionResponse(name, items, total, session.IsSubmitted);
+    }
+
+    public async Task<ReservationGuestSessionIdResponse> GetReservationGuestSessionIdAsync(
+        string userId,
+        string reservationId)
+    {
+        Reservation reservation = await reservationRepository.GetReservationByIdAsync(reservationId)
+                                  ?? throw new ReservationNotFoundException("Reservation not found.");
+
+        if (reservation.CustomerId != userId)
+            throw new ActionForbiddenException("Only the reservation owner can perform this action.");
+
+        GroupReservation? groupReservation = await groupReservationRepository.GetByReservationIdAsync(reservationId);
+        if (groupReservation is null)
+            throw new GuestSessionNotFoundException(OwnerSessionNotFoundMessage);
+
+        var sessions = await guestSessionRepository.GetAllByGroupReservationIdAsync(
+            groupReservation.GroupReservationId);
+        GuestSession? ownerSession = sessions.FirstOrDefault(session => session.IsOwnerSession);
+        if (ownerSession is null)
+            throw new GuestSessionNotFoundException(OwnerSessionNotFoundMessage);
+
+        return new ReservationGuestSessionIdResponse { GuestSessionId = ownerSession.Id };
     }
 }

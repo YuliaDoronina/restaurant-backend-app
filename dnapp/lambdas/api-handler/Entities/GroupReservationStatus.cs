@@ -5,4 +5,5 @@ public enum GroupReservationStatus
     Open,
     Submitted,
     Closed,
+    Submitting,
 }

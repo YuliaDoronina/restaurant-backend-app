@@ -555,12 +555,15 @@ Response: `200 OK`
 ```
 
 ### `GET` /reservations/{reservationId}/guest-session-id
-Response: `200 OK`
+Requires authentication. Only the authenticated reservation owner (`sub` matching `Reservation.CustomerId`) can retrieve the Owner session ID.
+
+Responses: `200 OK`, `400 Bad Request`, `401 Unauthorized`, `403 Forbidden`, `404 Not Found`, `500 Internal Server Error`.
 ```json
 {
   "guestSessionId": "string"
 }
 ```
+`404 Not Found` is returned if the reservation does not exist or its group reservation/Owner session has not been created. In the latter case, the error is `Owner session not found for this reservation`.
 
 
 ### `DELETE` /reservations
@@ -1180,12 +1183,19 @@ Response: 200 OK
 ```
 
 ### `POST` /group-reservations/{groupReservationId}/submit
-Response: 200 OK
+Requires authentication. Only the authenticated reservation owner (`sub` matching `Reservation.CustomerId`) can submit the group pre-order.
+
+Request:
 ```json
-{
-  "message": "Group reservation pre-order submitted successfully."
-}
+{ "reservationId": "string" }
 ```
+Response: `200 OK`, an array containing the final order quantities aggregated by `dishId`:
+```json
+[
+  { "dishId": "string", "quantity": 3 }
+]
+```
+The response includes the merged existing order items and all items from submitted Owner and guest sessions. Responses: `400 Bad Request`, `401 Unauthorized`, `403 Forbidden`, `404 Not Found`, `409 Conflict`, `500 Internal Server Error`.
 
 ### `GET` /guest/groups/{groupReservationId}/sessions
 Authorization scheme: HTTP Bearer; only the reservation owner may access this endpoint.

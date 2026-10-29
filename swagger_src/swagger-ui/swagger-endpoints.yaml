@@ -157,12 +157,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /guest/groups/{groupReservationId}/submit:
+  /group-reservations/{groupReservationId}/submit:
     post:
       tags:
         - Group Reservations
       summary: Submit group pre-order
-      description: Submits the pre-order for a group reservation, converting guest sessions to orders
+      description: Submits the authenticated reservation owner's group pre-order, aggregating all submitted owner and guest sessions into the reservation order.
       operationId: submitGroupPreOrder
       parameters:
         - name: groupReservationId
@@ -171,12 +171,14 @@ paths:
           description: The ID of the group reservation
           schema:
             type: string
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SubmitGroupPreOrderRequest'
+              $ref: '#/components/schemas/SubmitGroupReservationRequest'
       responses:
         '200':
           description: Group pre-order submitted successfully
@@ -186,7 +188,38 @@ paths:
                 type: array
                 items:
                   type: object
-                  description: Enriched dishes data
+                  required:
+                    - dishId
+                    - quantity
+                  properties:
+                    dishId:
+                      type: string
+                    quantity:
+                      type: integer
+        '401':
+          description: Missing or invalid authentication, or the sub claim is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The authenticated user does not own the reservation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Group reservation or reservation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Group reservation was already submitted or is closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid request - missing parameters or validation error
           content:
@@ -502,7 +535,7 @@ paths:
       tags:
         - Guest Sessions
       summary: Get owner's guest session ID
-      description: Retrieves the guest session ID for the reservation owner
+      description: Retrieves the guest session ID for the authenticated reservation owner (the Cognito sub must match Reservation.CustomerId).
       operationId: getOwnerSessionId
       parameters:
         - name: reservationId
@@ -526,8 +559,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid authentication, or the authenticated sub claim is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The authenticated user does not own this reservation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Reservation not found
+          description: Reservation not found, or its group reservation/Owner session has not been created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected internal server error
           content:
             application/json:
               schema:
@@ -581,7 +632,7 @@ components:
           description: The authentication token for the guest session
           example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
-    SubmitGroupPreOrderRequest:
+    SubmitGroupReservationRequest:
       type: object
       required:
         - reservationId

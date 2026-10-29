@@ -56,6 +56,14 @@ public class DeleteGuestSessionHandler : IApiRequestHandler
         {
             return ResponseBuilder.CreateErrorResponse(403, ex.Message, context.Logger);
         }
+        catch (GroupReservationExpiredException ex)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
+        }
+        catch (GroupReservationSubmittedException ex)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
+        }
         catch (ValidationException ex)
         {
             return ResponseBuilder.CreateErrorCodeResponse(ex);

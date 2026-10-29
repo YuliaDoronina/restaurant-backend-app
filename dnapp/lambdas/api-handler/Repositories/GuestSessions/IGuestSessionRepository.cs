@@ -16,7 +16,11 @@ public interface IGuestSessionRepository
 
     Task<List<GuestSession>> GetAllByGroupReservationIdAsync(string groupReservationId);
 
+    Task<List<GuestSession>> GetAllByGroupReservationIdConsistentAsync(string groupReservationId);
+
     Task SaveAsync(GuestSession guestSession);
+
+    Task SaveCartAsync(GuestSession guestSession);
 
     Task DeleteAsync(GuestSession session);
 }

@@ -1,4 +1,5 @@
 using APIHandler.Models.GuestSessions;
+using APIHandler.Models.Reservations;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -16,4 +17,5 @@ public interface IGuestSessionService
     Task<GuestMenuResponse> GetGuestMenuAsync(string guestSessionId);
     Task<GetAllSessionsResponse> DeleteGuestSessionAsync(string userId, string groupReservationId, string guestSessionId);
     Task<GetGuestSessionResponse> GetGuestSessionInfoAsync(string guestSessionId);
+    Task<ReservationGuestSessionIdResponse> GetReservationGuestSessionIdAsync(string userId, string reservationId);
 }

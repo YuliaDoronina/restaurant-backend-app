@@ -359,7 +359,7 @@ public class GuestSessionServiceTests
 
         GuestSession? session = null;
         _mockGuestSessionRepository
-            .Setup(r => r.SaveAsync(It.IsAny<GuestSession>()))
+            .Setup(r => r.SaveCartAsync(It.IsAny<GuestSession>()))
             .Callback<GuestSession>(s => session = s);
 
         _mockGuestSessionRepository
@@ -428,7 +428,7 @@ public class GuestSessionServiceTests
         Assert.Equal(quantityToAdd, guestSession.Dishes[0].Quantity);
         Assert.Equal(OrderItemState.Pending, guestSession.Dishes[0].State);
 
-        _mockGuestSessionRepository.Verify(r => r.SaveAsync(guestSession), Times.Once);
+        _mockGuestSessionRepository.Verify(r => r.SaveCartAsync(guestSession), Times.Once);
     }
 
     [Theory]
@@ -456,7 +456,7 @@ public class GuestSessionServiceTests
         Assert.Single(guestSession.Dishes);
         Assert.Equal(initialQuantity + quantityToAdd, guestSession.Dishes[0].Quantity);
 
-        _mockGuestSessionRepository.Verify(r => r.SaveAsync(guestSession), Times.Once);
+        _mockGuestSessionRepository.Verify(r => r.SaveCartAsync(guestSession), Times.Once);
     }
 
     [Theory]
@@ -584,7 +584,7 @@ public class GuestSessionServiceTests
         Assert.Single(guestSession.Dishes);
         Assert.Equal(initialQuantity - quantityToRemove, guestSession.Dishes[0].Quantity);
 
-        _mockGuestSessionRepository.Verify(r => r.SaveAsync(guestSession), Times.Once);
+        _mockGuestSessionRepository.Verify(r => r.SaveCartAsync(guestSession), Times.Once);
     }
 
     [Theory]
@@ -611,7 +611,7 @@ public class GuestSessionServiceTests
         await _guestSessionService.RemoveDishAsync(guestSession.Id, dishId, quantityToRemove);
 
         Assert.Empty(guestSession.Dishes);
-        _mockGuestSessionRepository.Verify(r => r.SaveAsync(guestSession), Times.Once);
+        _mockGuestSessionRepository.Verify(r => r.SaveCartAsync(guestSession), Times.Once);
     }
 
     [Theory]
@@ -690,7 +690,7 @@ public class GuestSessionServiceTests
 
         var exception = await Assert.ThrowsAsync<GuestLimitExceededException>(() => _guestSessionService.CreateGuestSessionAsync(request));
 
-        _mockGuestSessionRepository.Verify(r => r.SaveAsync(It.IsAny<GuestSession>()), Times.Never);
+        _mockGuestSessionRepository.Verify(r => r.SaveCartAsync(It.IsAny<GuestSession>()), Times.Never);
     }
 
     [Theory]
@@ -786,7 +786,7 @@ public class GuestSessionServiceTests
 
         GuestSession? session = null;
         _mockGuestSessionRepository
-            .Setup(r => r.SaveAsync(It.IsAny<GuestSession>()))
+            .Setup(r => r.SaveCartAsync(It.IsAny<GuestSession>()))
             .Callback<GuestSession>(s => session = s);
 
         await _guestSessionService.SubmitCartAsync(guestSession.Id);
@@ -1021,5 +1021,4 @@ public class GuestSessionServiceTests
         };
     }
 }
-
 
