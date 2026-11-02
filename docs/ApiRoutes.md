@@ -557,13 +557,17 @@ Response: `200 OK`
 ### `GET` /reservations/{reservationId}/guest-session-id
 Requires authentication. Only the authenticated reservation owner (`sub` matching `Reservation.CustomerId`) can retrieve the Owner session ID.
 
-Responses: `200 OK`, `400 Bad Request`, `401 Unauthorized`, `403 Forbidden`, `404 Not Found`, `500 Internal Server Error`.
+Responses: `200 OK`, `400 Bad Request`, `401 Unauthorized`, `403 Forbidden`, `404 Not Found`, `409 Conflict`, `500 Internal Server Error`.
 ```json
 {
   "guestSessionId": "string"
 }
 ```
-`404 Not Found` is returned if the reservation does not exist or its group reservation/Owner session has not been created. In the latter case, the error is `Owner session not found for this reservation`.
+For group reservations with a `CustomerId`, the Owner session is ensured when the reservation/group is created or when its customer is later attached. Repeated ensures return the existing Owner session. A reservation without a `CustomerId` has no Owner session; group reservations and ordinary guest sessions remain available.
+
+`404 Not Found` is returned if the reservation does not exist or its group reservation/Owner session has not been created. In the latter case, the error is `Owner session not found for this reservation`. A caller whose `sub` does not match `Reservation.CustomerId`, including any authenticated caller when `CustomerId` is null, receives `403 Forbidden`.
+
+This endpoint is read-only: it never creates a session and returns the existing stable Owner session ID regardless of `isSubmitted` or the group reservation status. The same ID is returned as the Owner participant `id` in `GET /guest/groups/{groupReservationId}/sessions`. `409 Conflict` is returned if multiple Owner sessions exist for the group (inconsistent legacy data; none is chosen). Owner session lookup uses a strongly consistent read of the stable Owner session key plus a strongly consistent read of all sessions of the group (filtered by `isOwnerSession`) to detect legacy Owner sessions with other IDs. DynamoDB has no strongly consistent GSI reads, so this uses the existing consistent filtered table scan (`GetAllByGroupReservationIdConsistentAsync`), which is not bounded to the group's items. Creating an Owner session while booking (create/edit reservation) returns `409` if the group reservation is closed or submitted. If the Owner user is not found or has no `given_name`, the Owner name falls back to `Owner` (a warning is logged); this also applies to `GET /guest/sessions/{guestSessionId}`.
 
 
 ### `DELETE` /reservations
@@ -1236,9 +1240,40 @@ Response: 200 OK
 Errors: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 500 Internal Server Error
 
 ### `DELETE` /guest/groups/{groupReservationId}/sessions/{guestSessionId}
+Authorization scheme: HTTP Bearer; only the reservation owner may delete a guest session.
+
 Response: 200 OK
 ```json
 {
-  "message": "Guest session removed from group successfully."
+  "participants": [
+    {
+      "id": null,
+      "type": "Owner",
+      "name": "Olena",
+      "items": [],
+      "total": 0,
+      "isSubmitted": false
+    },
+    {
+      "id": "session1",
+      "type": "Guest",
+      "name": "Andrii",
+      "items": [
+        {
+          "dish": {
+            "id": "dish1",
+            "name": "Caesar Salad",
+            "price": 180
+          },
+          "quantity": 2
+        }
+      ],
+      "total": 360,
+      "isSubmitted": true
+    }
+  ],
+  "total": 360
 }
 ```
+
+The response contains the updated group-session snapshot, using the same structure as `GET /guest/groups/{groupReservationId}/sessions`; `total` is recalculated after deletion. Errors: `400 Bad Request` for a session belonging to another group or an attempt to delete the Owner session, `401 Unauthorized` when authentication claims or a non-empty `sub` are missing, `403 Forbidden` when the authenticated user is not the reservation owner, `404 Not Found` when the group reservation, parent reservation, or session does not exist, `409 Conflict` when the group reservation is closed/expired or already submitted, and `500 Internal Server Error` for an unexpected internal error, including when the session is still found by a consistent read after deletion (`InvalidOperationException`).

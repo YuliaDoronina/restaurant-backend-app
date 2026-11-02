@@ -4,10 +4,12 @@ using Amazon.Lambda.Core;
 using APIHandler.Constants;
 using APIHandler.Entities;
 using APIHandler.Helpers;
+using APIHandler.Exceptions;
 using APIHandler.Mappers;
 using APIHandler.Models.Reservations;
 using APIHandler.Models.Users;
 using APIHandler.Services.Locations;
+using APIHandler.Services.Reservations;
 using System;
 using System.Linq;
 using System.Text.Json;
@@ -23,11 +25,16 @@ public class EditReservationHandler : IApiRequestHandler
 
     private readonly IDynamoDBContext _dbContext;
     private readonly ILocationService _locationService;
+    private readonly IReservationService _reservationService;
 
-    public EditReservationHandler(IDynamoDBContext dbContext, ILocationService locationService)
+    public EditReservationHandler(
+        IDynamoDBContext dbContext,
+        ILocationService locationService,
+        IReservationService reservationService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _locationService = locationService ?? throw new ArgumentNullException(nameof(locationService));
+        _reservationService = reservationService ?? throw new ArgumentNullException(nameof(reservationService));
     }
 
     public async Task<APIGatewayProxyResponse> HandleRequest(APIGatewayProxyRequest request, ILambdaContext context)
@@ -96,6 +103,17 @@ public class EditReservationHandler : IApiRequestHandler
         {
             context.Logger.LogError($"[ERROR] Failed to save reservation: {saveError}");
             return ResponseBuilder.CreateErrorResponse(500, "Failed to save reservation", context.Logger);
+        }
+
+        try
+        {
+            await _reservationService.EnsureGroupReservationForEditAsync(reservation);
+        }
+        catch (Exception ex) when (ex is GroupReservationExpiredException
+                                       or GroupReservationSubmittedException
+                                       or DuplicateOwnerSessionException)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
         }
 
         var location = await TryGetLocationAsync(table.Id);

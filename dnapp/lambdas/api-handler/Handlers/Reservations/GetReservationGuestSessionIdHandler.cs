@@ -54,6 +54,10 @@ public class GetReservationGuestSessionIdHandler : IApiRequestHandler
         {
             return ResponseBuilder.CreateErrorResponse(403, exception.Message, context.Logger);
         }
+        catch (DuplicateOwnerSessionException exception)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, exception.Message, context.Logger);
+        }
         catch (ValidationException exception)
         {
             return ResponseBuilder.CreateErrorResponse(400, exception.Message, context.Logger);

@@ -19,6 +19,7 @@
             "dynamodb:DeleteItem",
             "dynamodb:UpdateItem",
             "dynamodb:TransactWriteItems",
+            "dynamodb:ConditionCheckItem",
             "dynamodb:DescribeTable",
             "ssm:GetParameter",
             "kms:Decrypt",

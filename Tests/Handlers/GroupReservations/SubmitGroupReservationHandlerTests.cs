@@ -152,6 +152,25 @@ public class SubmitGroupReservationHandlerTests
         Assert.Equal("The reservationId does not match the group reservation.", GetErrorMessage(response));
     }
 
+    [Theory]
+    [InlineData("No submitted guest sessions were found.")]
+    [InlineData("Submitted guest sessions contain no dishes.")]
+    [InlineData("Order was not found for the reservation.")]
+    public async Task HandleRequest_SubmissionValidationFails_ReturnsBadRequest(string errorMessage)
+    {
+        // Arrange
+        _service
+            .Setup(service => service.SubmitGroupReservationAsync(GroupReservationId, ReservationId, OwnerUserId))
+            .ThrowsAsync(new ValidationException(errorMessage));
+
+        // Act
+        APIGatewayProxyResponse response = await _handler.HandleRequest(CreateRequest(), _lambdaContext.Object);
+
+        // Assert
+        Assert.Equal(400, response.StatusCode);
+        Assert.Equal(errorMessage, GetErrorMessage(response));
+    }
+
     [Fact]
     public async Task HandleRequest_CallerIsNotReservationOwner_ReturnsForbidden()
     {

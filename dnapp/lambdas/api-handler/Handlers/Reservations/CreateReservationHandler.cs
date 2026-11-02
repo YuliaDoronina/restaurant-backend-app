@@ -44,6 +44,12 @@ public class CreateReservationHandler : IApiRequestHandler
 
             return ResponseBuilder.CreateSuccessResponse(reservationResponse, 201);
         }
+        catch (Exception ex) when (ex is GroupReservationExpiredException
+                                       or GroupReservationSubmittedException
+                                       or DuplicateOwnerSessionException)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
+        }
         catch (ValidationException ex)
         {
             return ResponseBuilder.CreateErrorResponse(400, ex.Message, context.Logger);

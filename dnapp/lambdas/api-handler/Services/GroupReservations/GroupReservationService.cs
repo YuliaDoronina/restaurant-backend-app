@@ -92,13 +92,13 @@ public class GroupReservationService(
         return groupReservation;
     }
 
-    public async Task CreateGroupReservationIfDoesNotExistAsync(string userId, string reservationId)
+    public async Task<GroupReservation> CreateGroupReservationIfDoesNotExistAsync(string userId, string reservationId)
     {
         GroupReservation? group = await groupReservationRepository.GetByReservationIdAsync(reservationId);
         if (group is not null)
-            return;
+            return group;
 
-        await CreateGroupReservationAsync(reservationId);
+        return await CreateGroupReservationAsync(reservationId);
     }
 
     public async Task UpdateGroupReservationStatusAsync(string groupReservationId, GroupReservationStatus status)
@@ -215,7 +215,7 @@ public class GroupReservationService(
             ?? throw new InvalidOperationException("Order repository is not configured.");
 
         List<GuestSession> submittedSessions = (await guestSessionRepository.GetAllByGroupReservationIdConsistentAsync(groupReservation.GroupReservationId))
-            .Where(session => session.IsSubmitted)
+            .Where(session => session.IsSubmitted && !session.IsOwnerSession)
             .ToList();
         if (submittedSessions.Count == 0)
             throw new ValidationException("No submitted guest sessions were found.");

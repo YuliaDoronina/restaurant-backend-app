@@ -21,6 +21,13 @@ public class GuestSessionRepository(IDynamoDBContext context, IAmazonDynamoDB dy
         OverrideTableName = ResourceNames.GuestSessionTableName
     });
 
+    public async Task<GuestSession?> GetByGuestSessionIdConsistentAsync(string id) =>
+        await context.LoadAsync<GuestSession?>(id, new LoadConfig
+        {
+            OverrideTableName = ResourceNames.GuestSessionTableName,
+            ConsistentRead = true
+        });
+
     public async Task<GuestSession?> GetByGroupReservationId(string groupReservationId)
     {
         List<GuestSession> result = await context.QueryAsync<GuestSession>(groupReservationId, new QueryConfig
@@ -64,6 +71,12 @@ public class GuestSessionRepository(IDynamoDBContext context, IAmazonDynamoDB dy
         return await context.ScanAsync<GuestSession>(conditions, scanConfig).GetRemainingAsync();
     }
 
+    public async Task<List<GuestSession>> GetOwnerSessionsByGroupReservationIdAsync(string groupReservationId)
+    {
+        List<GuestSession> sessions = await GetAllByGroupReservationIdAsync(groupReservationId);
+        return sessions.Where(session => session.IsOwnerSession).ToList();
+    }
+
     public async Task SaveAsync(GuestSession guestSession) => await context.SaveAsync(guestSession, new SaveConfig
     {
         OverrideTableName = ResourceNames.GuestSessionTableName
@@ -84,6 +97,43 @@ public class GuestSessionRepository(IDynamoDBContext context, IAmazonDynamoDB dy
         await ExecuteCartMutationAsync(guestSession.GroupReservationId, saveSession);
     }
 
+    public async Task<bool> TrySaveOwnerSessionAsync(GuestSession guestSession)
+    {
+        ArgumentNullException.ThrowIfNull(guestSession);
+
+        TransactWriteItem saveSession = new()
+        {
+            Put = new Put
+            {
+                TableName = ResourceNames.GuestSessionTableName,
+                Item = context.ToDocument(guestSession).ToAttributeMap(),
+                ConditionExpression = "attribute_not_exists(guestSessionId)"
+            }
+        };
+
+        try
+        {
+            await dynamoDbClient.TransactWriteItemsAsync(new TransactWriteItemsRequest
+            {
+                TransactItems =
+                [
+                    CreateOpenGroupConditionCheck(guestSession.GroupReservationId),
+                    saveSession
+                ]
+            });
+            return true;
+        }
+        catch (TransactionCanceledException exception) when (IsGroupStatusConditionFailure(exception))
+        {
+            await ThrowGroupStatusConflictAsync(guestSession.GroupReservationId);
+            throw;
+        }
+        catch (TransactionCanceledException exception) when (IsOwnerSessionKeyConflict(exception))
+        {
+            return false;
+        }
+    }
+
     public async Task<int> CountByGroupReservationId(string groupReservationId)
     {
         List<GuestSession> result = await context.QueryAsync<GuestSession>(groupReservationId, new QueryConfig
@@ -92,7 +142,8 @@ public class GuestSessionRepository(IDynamoDBContext context, IAmazonDynamoDB dy
             IndexName = GlobalSecondaryIndexes.GuestSession.GroupReservationId
         }).GetRemainingAsync();
 
-        return result.Count;
+        // Only guest sessions are counted; the Owner is added once by callers, regardless of stored Owner rows.
+        return result.Count(session => !session.IsOwnerSession);
     }
 
     public async Task DeleteAsync(GuestSession session)
@@ -168,6 +219,12 @@ public class GuestSessionRepository(IDynamoDBContext context, IAmazonDynamoDB dy
     private static bool IsGroupStatusConditionFailure(TransactionCanceledException exception)
     {
         return exception.CancellationReasons?.FirstOrDefault()?.Code == "ConditionalCheckFailed";
+    }
+
+    private static bool IsOwnerSessionKeyConflict(TransactionCanceledException exception)
+    {
+        return exception.CancellationReasons?.Count > 1 &&
+               exception.CancellationReasons[1].Code == "ConditionalCheckFailed";
     }
 
     private async Task ThrowGroupStatusConflictAsync(string groupReservationId)

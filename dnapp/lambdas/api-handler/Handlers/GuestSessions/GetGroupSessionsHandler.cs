@@ -44,6 +44,10 @@ public class GetGroupSessionsHandler : IApiRequestHandler
         {
             return ResponseBuilder.CreateErrorResponse(404, ex.Message, context.Logger);
         }
+        catch (DuplicateOwnerSessionException ex)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
+        }
         catch (ActionForbiddenException ex)
         {
             return ResponseBuilder.CreateErrorResponse(403, ex.Message, context.Logger);

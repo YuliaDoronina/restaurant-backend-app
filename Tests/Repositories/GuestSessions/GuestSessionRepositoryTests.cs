@@ -55,6 +55,235 @@ public sealed class GuestSessionRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task TrySaveOwnerSessionAsync_WritesConditionallyInTransactionWithOpenGroupCheck()
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        Mock<IAmazonDynamoDB> client = new();
+        TransactWriteItemsRequest? capturedRequest = null;
+        client
+            .Setup(dynamoClient => dynamoClient.TransactWriteItemsAsync(
+                It.IsAny<TransactWriteItemsRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<TransactWriteItemsRequest, CancellationToken>((request, _) => capturedRequest = request)
+            .ReturnsAsync(new TransactWriteItemsResponse());
+        GuestSessionRepository repository = new(context.Object, client.Object);
+
+        // Act
+        bool result = await repository.TrySaveOwnerSessionAsync(CreateOwnerSession());
+
+        // Assert
+        Assert.True(result);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(2, capturedRequest.TransactItems.Count);
+        ConditionCheck groupCondition = Assert.IsType<ConditionCheck>(
+            capturedRequest.TransactItems[0].ConditionCheck);
+        Assert.Equal("groups-test", groupCondition.TableName);
+        Assert.Equal("#status = :openStatus", groupCondition.ConditionExpression);
+        Put ownerPut = Assert.IsType<Put>(capturedRequest.TransactItems[1].Put);
+        Assert.Equal("guest-sessions-test", ownerPut.TableName);
+        Assert.Equal("attribute_not_exists(guestSessionId)", ownerPut.ConditionExpression);
+        client.Verify(
+            dynamoClient => dynamoClient.TransactWriteItemsAsync(
+                It.IsAny<TransactWriteItemsRequest>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task TrySaveOwnerSessionAsync_WhenOwnerKeyConditionFails_ReturnsFalseForCallerToReread()
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        Mock<IAmazonDynamoDB> client = new();
+        client
+            .Setup(dynamoClient => dynamoClient.TransactWriteItemsAsync(
+                It.IsAny<TransactWriteItemsRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TransactionCanceledException("owner key already exists")
+            {
+                CancellationReasons =
+                [
+                    new CancellationReason { Code = "None" },
+                    new CancellationReason { Code = "ConditionalCheckFailed" }
+                ]
+            });
+        GuestSessionRepository repository = new(context.Object, client.Object);
+
+        // Act
+        bool result = await repository.TrySaveOwnerSessionAsync(CreateOwnerSession());
+
+        // Assert
+        Assert.False(result);
+        client.Verify(
+            dynamoClient => dynamoClient.TransactWriteItemsAsync(
+                It.IsAny<TransactWriteItemsRequest>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task TrySaveOwnerSessionAsync_WhenTransactionFailsForAnotherReason_PropagatesFailure()
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        Mock<IAmazonDynamoDB> client = new();
+        ProvisionedThroughputExceededException expectedException =
+            new("DynamoDB capacity is unavailable");
+        client
+            .Setup(dynamoClient => dynamoClient.TransactWriteItemsAsync(
+                It.IsAny<TransactWriteItemsRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(expectedException);
+        GuestSessionRepository repository = new(context.Object, client.Object);
+
+        // Act
+        ProvisionedThroughputExceededException actualException =
+            await Assert.ThrowsAsync<ProvisionedThroughputExceededException>(
+                () => repository.TrySaveOwnerSessionAsync(CreateOwnerSession()));
+
+        // Assert
+        Assert.Same(expectedException, actualException);
+    }
+
+    [Fact]
+    public async Task TrySaveOwnerSessionAsync_WhenTransactionIsCancelledWithoutKeyConditionConflict_PropagatesCancellation()
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        Mock<IAmazonDynamoDB> client = new();
+        TransactionCanceledException expectedException = new("transaction cancelled for another reason")
+        {
+            CancellationReasons =
+            [
+                new CancellationReason { Code = "None" },
+                new CancellationReason { Code = "TransactionConflict" }
+            ]
+        };
+        client
+            .Setup(dynamoClient => dynamoClient.TransactWriteItemsAsync(
+                It.IsAny<TransactWriteItemsRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(expectedException);
+        GuestSessionRepository repository = new(context.Object, client.Object);
+
+        // Act
+        TransactionCanceledException actualException = await Assert.ThrowsAsync<TransactionCanceledException>(
+            () => repository.TrySaveOwnerSessionAsync(CreateOwnerSession()));
+
+        // Assert
+        Assert.Same(expectedException, actualException);
+    }
+
+    [Fact]
+    public async Task GetByGuestSessionIdConsistentAsync_LoadsWithStrongConsistency()
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        GuestSession expectedSession = CreateOwnerSession();
+        LoadConfig? capturedConfig = null;
+        context
+            .Setup(dynamoContext => dynamoContext.LoadAsync<GuestSession?>(
+                "owner-session-1",
+                It.IsAny<LoadConfig>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<object, LoadConfig, CancellationToken>((_, config, _) => capturedConfig = config)
+            .ReturnsAsync(expectedSession);
+        GuestSessionRepository repository = new(context.Object, Mock.Of<IAmazonDynamoDB>());
+
+        // Act
+        GuestSession? actualSession = await repository.GetByGuestSessionIdConsistentAsync("owner-session-1");
+
+        // Assert
+        Assert.Same(expectedSession, actualSession);
+        Assert.NotNull(capturedConfig);
+        Assert.True(capturedConfig.ConsistentRead);
+        Assert.Equal("guest-sessions-test", capturedConfig.OverrideTableName);
+    }
+
+    [Fact]
+    public async Task GetOwnerSessionsByGroupReservationIdAsync_QueriesGroupIndexAndReturnsOnlyOwnerSessions()
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        GuestSession expectedOwnerSession = CreateOwnerSession();
+        GuestSession guestSession = CreateSession();
+        Mock<AsyncSearch<GuestSession>> search = new();
+        search
+            .Setup(asyncSearch => asyncSearch.GetRemainingAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([guestSession, expectedOwnerSession]);
+        QueryConfig? capturedConfig = null;
+        object? capturedGroupReservationId = null;
+        context
+            .Setup(dynamoContext => dynamoContext.QueryAsync<GuestSession>(
+                It.IsAny<object>(),
+                It.IsAny<QueryConfig>()))
+            .Callback<object, QueryConfig>((groupReservationId, config) =>
+            {
+                capturedGroupReservationId = groupReservationId;
+                capturedConfig = config;
+            })
+            .Returns(search.Object);
+        GuestSessionRepository repository = new(context.Object, Mock.Of<IAmazonDynamoDB>());
+
+        // Act
+        List<GuestSession> result =
+            await repository.GetOwnerSessionsByGroupReservationIdAsync("group-1");
+
+        // Assert
+        Assert.Same(expectedOwnerSession, Assert.Single(result));
+        Assert.NotNull(capturedConfig);
+        Assert.Equal("guest-sessions-test", capturedConfig.OverrideTableName);
+        Assert.Equal(GlobalSecondaryIndexes.GuestSession.GroupReservationId, capturedConfig.IndexName);
+        Assert.Equal("group-1", capturedGroupReservationId);
+        context.Verify(
+            dynamoContext => dynamoContext.ScanAsync<GuestSession>(
+                It.IsAny<IEnumerable<ScanCondition>>(),
+                It.IsAny<ScanConfig>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 0)]
+    [InlineData(0, 2, 0)]
+    [InlineData(1, 0, 1)]
+    [InlineData(1, 1, 1)]
+    [InlineData(3, 2, 3)]
+    public async Task CountByGroupReservationId_StoredOwnerRows_AreExcludedFromGuestCount(
+        int guestRows,
+        int ownerRows,
+        int expectedCount)
+    {
+        // Arrange
+        Mock<IDynamoDBContext> context = CreateContextMock();
+        List<GuestSession> stored = [];
+        for (int i = 0; i < guestRows; i++)
+            stored.Add(CreateSession());
+        for (int i = 0; i < ownerRows; i++)
+            stored.Add(CreateOwnerSession());
+        Mock<AsyncSearch<GuestSession>> search = new();
+        search
+            .Setup(asyncSearch => asyncSearch.GetRemainingAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(stored);
+        QueryConfig? capturedConfig = null;
+        context
+            .Setup(dynamoContext => dynamoContext.QueryAsync<GuestSession>(
+                It.IsAny<object>(),
+                It.IsAny<QueryConfig>()))
+            .Callback<object, QueryConfig>((_, config) => capturedConfig = config)
+            .Returns(search.Object);
+        GuestSessionRepository repository = new(context.Object, Mock.Of<IAmazonDynamoDB>());
+
+        // Act
+        int count = await repository.CountByGroupReservationId("group-1");
+
+        // Assert
+        Assert.Equal(expectedCount, count);
+        Assert.NotNull(capturedConfig);
+        Assert.Equal(GlobalSecondaryIndexes.GuestSession.GroupReservationId, capturedConfig.IndexName);
+    }
+
+    [Fact]
     public async Task DeleteAsync_DeletesSessionInTransactionConditionedOnOpenGroup()
     {
         Mock<IDynamoDBContext> context = CreateContextMock();
@@ -208,6 +437,16 @@ public sealed class GuestSessionRepositoryTests : IDisposable
         GroupReservationId = "group-1",
         GuestName = "Guest",
         IsSubmitted = false,
+        Dishes = []
+    };
+
+    private static GuestSession CreateOwnerSession() => new()
+    {
+        Id = "owner-session-1",
+        GroupReservationId = "group-1",
+        GuestName = "Owner",
+        IsOwnerSession = true,
+        OwnerUserId = "owner-1",
         Dishes = []
     };
 

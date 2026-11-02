@@ -131,6 +131,20 @@ public class ReservationGuestSessionIdHandlerTests
     }
 
     [Fact]
+    public async Task HandleRequest_MultipleOwnerSessionsExist_ReturnsConflict()
+    {
+        const string message = "Multiple Owner sessions exist for group reservation 'group-1'.";
+        _guestSessionService
+            .Setup(service => service.GetReservationGuestSessionIdAsync(OwnerUserId, ReservationId))
+            .ThrowsAsync(new DuplicateOwnerSessionException("group-1"));
+
+        APIGatewayProxyResponse response = await _handler.HandleRequest(CreateRequest(), _lambdaContext.Object);
+
+        Assert.Equal(409, response.StatusCode);
+        Assert.Equal(message, GetErrorMessage(response));
+    }
+
+    [Fact]
     public async Task HandleRequest_ServiceValidationException_ReturnsBadRequest()
     {
         const string message = "Invalid reservation.";

@@ -1,4 +1,5 @@
 using Amazon.CognitoIdentityProvider.Model;
+using Amazon.Lambda.Core;
 using APIHandler.Constants;
 using APIHandler.Constants.Dishes;
 using APIHandler.Constants.Orders;
@@ -19,6 +20,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using APIHandler.Services.Notifications;
 
@@ -32,6 +34,9 @@ public class GuestSessionService(
     IUserRepository userRepository,
     ITableRepository tableRepository) : IGuestSessionService
 {
+    private const string DefaultOwnerName = "Owner";
+    private const int OwnerParticipantCount = 1;
+    private const string GivenNameAttribute = "given_name";
     private const string OwnerSessionNotFoundMessage = "Owner session not found for this reservation";
 
     public async Task<bool> IsAuthorizedAsync(string guestSessionToken, string guestSessionId)
@@ -180,12 +185,12 @@ public class GuestSessionService(
     }
 
 
-    public async Task<GetAllSessionsResponse> DeleteGuestSessionAsync(string userId, string groupReservationId,
+    public async Task<GroupSessionsResponse> DeleteGuestSessionAsync(string userId, string groupReservationId,
         string guestSessionId)
     {
-        await ValidateReservationOwnerAsync(groupReservationId, userId);
+        Reservation reservation = await ValidateReservationOwnerAsync(groupReservationId, userId);
 
-        var session = await guestSessionRepository.GetByGuestSessionId(guestSessionId)
+        GuestSession session = await guestSessionRepository.GetByGuestSessionIdConsistentAsync(guestSessionId)
                       ?? throw new GuestSessionNotFoundException($"Guest session with id {guestSessionId} not found.");
 
         if (session.GroupReservationId != groupReservationId)
@@ -193,47 +198,52 @@ public class GuestSessionService(
             throw new ValidationException("Guest session does not belong to this group reservation.");
         }
 
-        await guestSessionRepository.DeleteAsync(session);
-
-        var sessions = await guestSessionRepository.GetAllByGroupReservationIdAsync(groupReservationId);
-
-        var dishIds = sessions
-            .SelectMany(s => s.Dishes)
-            .Select(s => s.DishId)
-            .Distinct()
-            .ToArray();
-
-        var allDishes = await dishRepository.GetDishesByIdsAsync(dishIds);
-        var dishesById = allDishes.ToDictionary(d => d.Id);
-
-        var participants = new List<Participant>();
-
-        foreach (var guestSession in sessions)
+        if (session.IsOwnerSession)
         {
-            var items = guestSession.Dishes.Select(d => new OrderItemResponse
-            {
-                Dish = DishMapper.ToDishResponse(dishesById[d.DishId]),
-                Quantity = d.Quantity
-            }).ToArray();
-
-            decimal total = items.Sum(i => i.Quantity * i.Dish.Price);
-            var participant = new Participant(guestSession.Id, ParticipantType.Guest, guestSession.GuestName, items,
-                total, guestSession.IsSubmitted);
-            participants.Add(participant);
+            throw new ValidationException("Owner sessions cannot be deleted.");
         }
 
-        return new GetAllSessionsResponse(participants, participants.Sum(p => p.Total));
+        await guestSessionRepository.DeleteAsync(session);
+
+        List<GuestSession> sessions = await GetConfirmedPostDeleteSessionsAsync(groupReservationId, guestSessionId);
+        GuestSession? ownerSession = await FindOwnerSessionAsync(groupReservationId);
+        return await BuildGroupSessionsResponseAsync(reservation, groupReservationId, ownerSession, sessions);
+    }
+
+    private async Task<List<GuestSession>> GetConfirmedPostDeleteSessionsAsync(
+        string groupReservationId,
+        string guestSessionId)
+    {
+        GuestSession? deletedSession = await guestSessionRepository.GetByGuestSessionIdConsistentAsync(guestSessionId);
+        if (deletedSession is not null)
+        {
+            throw new InvalidOperationException(
+                $"Guest session '{guestSessionId}' still exists after the delete operation.");
+        }
+
+        return await guestSessionRepository.GetAllByGroupReservationIdConsistentAsync(groupReservationId);
     }
 
     public async Task<GroupSessionsResponse> GetGroupSessionsAsync(string userId, string groupReservationId)
     {
         Reservation reservation = await ValidateReservationOwnerAsync(groupReservationId, userId);
+        GuestSession? ownerSession = await FindOwnerSessionAsync(groupReservationId);
         var sessions = await guestSessionRepository.GetAllByGroupReservationIdAsync(groupReservationId);
-        GuestSession? ownerSession = sessions.FirstOrDefault(session => session.IsOwnerSession);
-        Dictionary<string, Dish> dishesById = await GetSessionDishesByIdAsync(sessions);
+        return await BuildGroupSessionsResponseAsync(reservation, groupReservationId, ownerSession, sessions);
+    }
+
+    private async Task<GroupSessionsResponse> BuildGroupSessionsResponseAsync(
+        Reservation reservation,
+        string groupReservationId,
+        GuestSession? ownerSession,
+        List<GuestSession> sessions)
+    {
+        List<GuestSession> guestSessions = sessions.Where(session => !session.IsOwnerSession).ToList();
+        IEnumerable<GuestSession> dishSessions = ownerSession is null ? guestSessions : [ownerSession, .. guestSessions];
+        Dictionary<string, Dish> dishesById = await GetSessionDishesByIdAsync(dishSessions);
         GroupSessionParticipantResponse ownerParticipant = await MapOwnerParticipantAsync(
             ownerSession, reservation, groupReservationId, dishesById);
-        IEnumerable<GroupSessionParticipantResponse> guestParticipants = MapGuestParticipants(sessions, dishesById);
+        IEnumerable<GroupSessionParticipantResponse> guestParticipants = MapGuestParticipants(guestSessions, dishesById);
         GroupSessionParticipantResponse[] participants = [ownerParticipant, .. guestParticipants];
 
         return new GroupSessionsResponse(participants, participants.Sum(participant => participant.Total));
@@ -276,11 +286,21 @@ public class GuestSessionService(
         string ownerUserId = ownerSession?.OwnerUserId ?? reservation.CustomerId
             ?? throw new InvalidOperationException(
                 $"Owner identity for group reservation '{groupReservationId}' was not found.");
-        var owner = await userRepository.GetUserByIdAsync(ownerUserId)
-                    ?? throw new InvalidOperationException(
-                        $"Owner user '{ownerUserId}' for group reservation '{groupReservationId}' was not found.");
-        return owner.Attributes.FirstOrDefault(attribute => attribute.Name == "given_name")?.Value
-               ?? throw new InvalidOperationException($"Owner user '{ownerUserId}' has no given name.");
+        var owner = await userRepository.GetUserByIdAsync(ownerUserId);
+        if (owner is null)
+            return LogOwnerNameFallback(
+                $"Owner user '{ownerUserId}' for group reservation '{groupReservationId}' was not found.");
+
+        string? givenName = owner.Attributes.FirstOrDefault(attribute => attribute.Name == GivenNameAttribute)?.Value;
+        return string.IsNullOrWhiteSpace(givenName)
+            ? LogOwnerNameFallback($"Owner user '{ownerUserId}' has no '{GivenNameAttribute}' attribute.")
+            : givenName;
+    }
+
+    private static string LogOwnerNameFallback(string reason)
+    {
+        LambdaLogger.Log($"[WARN] {reason} Falling back to '{DefaultOwnerName}'.");
+        return DefaultOwnerName;
     }
 
     private static IEnumerable<GroupSessionParticipantResponse> MapGuestParticipants(
@@ -344,9 +364,10 @@ public class GuestSessionService(
     {
         var sessions = await guestSessionRepository.GetAllByGroupReservationIdAsync(groupReservationId);
 
-        // Owner is always 1 active participant. 
-        // If sessions is null/empty, it safely evaluates to 0 joined guests + 1 owner = 1.
-        return (sessions?.Count ?? 0) + 1;
+        // Guests are counted separately; exactly one logical Owner is added,
+        // independent of how many Owner session rows are stored.
+        int guestCount = sessions?.Count(session => !session.IsOwnerSession) ?? 0;
+        return guestCount + OwnerParticipantCount;
     }
 
     private async Task ValidateGroupReservationId(string groupReservationId) =>
@@ -417,19 +438,44 @@ public class GuestSessionService(
         return reservation;
     }
 
-    public async Task CreateGroupOwnerSessionAsync(string userId, string groupReservationId)
+    public async Task<GuestSession> EnsureOwnerSessionAsync(string ownerUserId, GroupReservation groupReservation)
     {
-        var session = new GuestSession()
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerUserId);
+        ArgumentNullException.ThrowIfNull(groupReservation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupReservation.GroupReservationId);
+
+        Reservation reservation = await reservationRepository.GetReservationByIdAsync(groupReservation.ReservationId)
+                                  ?? throw new ReservationNotFoundException("Reservation not found.");
+        if (string.IsNullOrWhiteSpace(reservation.CustomerId) || reservation.CustomerId != ownerUserId)
+            throw new ActionForbiddenException("Only the reservation owner can have an Owner session.");
+
+        GuestSession? existingSession = await FindOwnerSessionAsync(groupReservation.GroupReservationId);
+        if (existingSession is not null)
         {
-            Id = Guid.NewGuid().ToString(),
-            GroupReservationId = groupReservationId,
-            GuestName = "Owner",
+            return ValidateOwnerSession(existingSession, ownerUserId, groupReservation.GroupReservationId);
+        }
+
+        string ownerSessionId = GetStableOwnerSessionId(groupReservation.GroupReservationId);
+
+        GuestSession session = new()
+        {
+            Id = ownerSessionId,
+            GroupReservationId = groupReservation.GroupReservationId,
+            GuestName = DefaultOwnerName,
             Dishes = [],
             IsOwnerSession = true,
-            OwnerUserId = userId,
+            OwnerUserId = ownerUserId,
         };
 
-        await guestSessionRepository.SaveCartAsync(session);
+        bool created = await guestSessionRepository.TrySaveOwnerSessionAsync(session);
+        if (created)
+            return session;
+
+        GuestSession? concurrentSession = await guestSessionRepository.GetByGuestSessionIdConsistentAsync(session.Id);
+        if (concurrentSession is null)
+            throw new InvalidOperationException("Owner session key was occupied, but the existing session could not be loaded.");
+
+        return ValidateOwnerSession(concurrentSession, ownerUserId, groupReservation.GroupReservationId);
     }
 
     public async Task<GetGuestSessionResponse> GetGuestSessionInfoAsync(string guestSessionId)
@@ -456,14 +502,21 @@ public class GuestSessionService(
         string name = session.GuestName;
         if (session.IsOwnerSession)
         {
-            var groupReservation =
-                await groupReservationRepository.GetGroupReservationByIdAsync(session.GroupReservationId);
-            var reservation = await reservationRepository.GetReservationByIdAsync(groupReservation!.ReservationId);
-            var user = await userRepository.GetUserByIdAsync(reservation!.CustomerId!);
-            name = user!.Attributes.First(a => a.Name == "given_name").Value;
+            name = await GetStoredOwnerNameAsync(session);
         }
 
         return new GetGuestSessionResponse(name, items, total, session.IsSubmitted);
+    }
+
+    private async Task<string> GetStoredOwnerNameAsync(GuestSession ownerSession)
+    {
+        GroupReservation groupReservation =
+            await groupReservationRepository.GetGroupReservationByIdAsync(ownerSession.GroupReservationId)
+            ?? throw new GroupReservationNotFoundException();
+        Reservation reservation = await reservationRepository.GetReservationByIdAsync(groupReservation.ReservationId)
+                                  ?? throw new ReservationNotFoundException("Reservation not found.");
+
+        return await GetOwnerNameAsync(ownerSession, reservation, ownerSession.GroupReservationId);
     }
 
     public async Task<ReservationGuestSessionIdResponse> GetReservationGuestSessionIdAsync(
@@ -480,12 +533,57 @@ public class GuestSessionService(
         if (groupReservation is null)
             throw new GuestSessionNotFoundException(OwnerSessionNotFoundMessage);
 
-        var sessions = await guestSessionRepository.GetAllByGroupReservationIdAsync(
-            groupReservation.GroupReservationId);
-        GuestSession? ownerSession = sessions.FirstOrDefault(session => session.IsOwnerSession);
-        if (ownerSession is null)
+        GuestSession? ownerSession = await FindOwnerSessionAsync(groupReservation.GroupReservationId);
+        if (ownerSession is null || ownerSession.OwnerUserId != reservation.CustomerId)
             throw new GuestSessionNotFoundException(OwnerSessionNotFoundMessage);
 
         return new ReservationGuestSessionIdResponse { GuestSessionId = ownerSession.Id };
+    }
+
+    private async Task<GuestSession?> FindOwnerSessionAsync(string groupReservationId)
+    {
+        // Stable-ID owner session: strongly consistent point read (O(1)); new Owner sessions are only
+        // created under this key via a conditional write, so it cannot be missed after a successful create.
+        GuestSession? stableSession = await guestSessionRepository.GetByGuestSessionIdConsistentAsync(
+            GetStableOwnerSessionId(groupReservationId));
+
+        // Legacy Owner sessions may have random IDs. The GSI is eventually consistent and could miss them,
+        // so a strongly consistent lookup is used to keep EnsureOwnerSessionAsync idempotent.
+        List<GuestSession> groupSessions =
+            await guestSessionRepository.GetAllByGroupReservationIdConsistentAsync(groupReservationId);
+        List<GuestSession> indexedOwnerSessions = groupSessions.Where(session => session.IsOwnerSession).ToList();
+
+        List<GuestSession> ownerSessions = indexedOwnerSessions
+            .Where(session => session.Id != stableSession?.Id)
+            .ToList();
+        if (stableSession is not null)
+            ownerSessions.Add(stableSession);
+
+        if (ownerSessions.Count > 1)
+            throw new DuplicateOwnerSessionException(groupReservationId);
+
+        return ownerSessions.FirstOrDefault();
+    }
+
+    private static GuestSession ValidateOwnerSession(
+        GuestSession session,
+        string ownerUserId,
+        string groupReservationId)
+    {
+        if (!session.IsOwnerSession ||
+            session.GroupReservationId != groupReservationId ||
+            session.OwnerUserId != ownerUserId)
+        {
+            throw new InvalidOperationException(
+                $"An incompatible Owner session already exists for group reservation '{groupReservationId}'.");
+        }
+
+        return session;
+    }
+
+    private static string GetStableOwnerSessionId(string groupReservationId)
+    {
+        byte[] groupIdHash = SHA256.HashData(Encoding.UTF8.GetBytes(groupReservationId));
+        return $"owner-{Convert.ToHexString(groupIdHash)}";
     }
 }

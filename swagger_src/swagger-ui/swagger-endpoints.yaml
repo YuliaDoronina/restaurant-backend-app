@@ -485,8 +485,8 @@ paths:
     delete:
       tags:
         - Guest Sessions
-      summary: Delete guest session
-      description: Deletes a guest session from a group reservation
+      summary: Delete guest session (Owner only)
+      description: Only the reservation Owner can perform this operation. Deletes only the specified guest session, not the Owner session, and returns the complete updated group snapshot, including the Owner session and current total.
       operationId: deleteGuestSession
       parameters:
         - name: groupReservationId
@@ -505,37 +505,53 @@ paths:
         - bearerAuth: []
       responses:
         '200':
-          description: Guest session deleted successfully
+          description: Guest session deleted; complete updated group snapshot returned, including the Owner session and current total
           content:
             application/json:
               schema:
-                type: object
-                description: Updated snapshot of the group reservation
+                $ref: '#/components/schemas/GroupSessionsResponse'
         '400':
-          description: Invalid request - missing required path parameters
+          description: Invalid request - missing groupReservationId or guestSessionId, guest session belongs to another group reservation, or attempt to delete the Owner session
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - required authentication claims are missing, or the sub claim is missing or empty
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The authenticated user does not own the reservation
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Group reservation or guest session not found
+          description: Group reservation, parent reservation, or guest session not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
+        '409':
+          description: Conflict - group reservation is closed/expired or already submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - unexpected internal error, including when the guest session is still found by a consistent read after deletion (InvalidOperationException)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /reservations/{reservationId}/guest-session-id:
     get:
       tags:
         - Guest Sessions
       summary: Get owner's guest session ID
-      description: Retrieves the guest session ID for the authenticated reservation owner (the Cognito sub must match Reservation.CustomerId).
+      description: Read-only; never creates a session. Retrieves the existing guest session ID for the authenticated reservation owner (the Cognito sub must match Reservation.CustomerId). Owner sessions are ensured for group reservations only when CustomerId is associated; reservations without CustomerId may still have group reservations and ordinary guest sessions.
       operationId: getOwnerSessionId
       parameters:
         - name: reservationId
@@ -573,6 +589,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Reservation not found, or its group reservation/Owner session has not been created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Multiple Owner sessions exist for the group reservation (inconsistent data); none is selected
           content:
             application/json:
               schema:

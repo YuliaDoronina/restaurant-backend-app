@@ -10,7 +10,11 @@ public interface IGuestSessionRepository
 
     Task<GuestSession?> GetByGroupReservationId(string groupReservationId);
 
+    Task<List<GuestSession>> GetOwnerSessionsByGroupReservationIdAsync(string groupReservationId);
+
     Task<GuestSession?> GetByGuestSessionId(string id);
+
+    Task<GuestSession?> GetByGuestSessionIdConsistentAsync(string id);
 
     Task<GuestSession?> GetByTokenHash(string tokenHash);
 
@@ -21,6 +25,8 @@ public interface IGuestSessionRepository
     Task SaveAsync(GuestSession guestSession);
 
     Task SaveCartAsync(GuestSession guestSession);
+
+    Task<bool> TrySaveOwnerSessionAsync(GuestSession guestSession);
 
     Task DeleteAsync(GuestSession session);
 }

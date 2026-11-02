@@ -150,6 +150,20 @@ public class GetGroupSessionsHandlerTests
     }
 
     [Fact]
+    public async Task HandleRequest_MultipleOwnerSessionsExist_ReturnsConflict()
+    {
+        const string message = "Multiple Owner sessions exist for group reservation 'group-1'.";
+        _guestSessionService
+            .Setup(service => service.GetGroupSessionsAsync(OwnerUserId, GroupReservationId))
+            .ThrowsAsync(new DuplicateOwnerSessionException(GroupReservationId));
+
+        APIGatewayProxyResponse response = await _handler.HandleRequest(CreateRequest(), _lambdaContext.Object);
+
+        Assert.Equal(409, response.StatusCode);
+        Assert.Equal(message, GetErrorMessage(response));
+    }
+
+    [Fact]
     public async Task HandleRequest_UnexpectedServiceException_IsNotSwallowed()
     {
         _guestSessionService

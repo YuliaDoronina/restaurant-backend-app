@@ -29,8 +29,4 @@
     <Folder Include="Handlers\Reservations\" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Remove="Handlers\Reservations\GetReservationGuestSessionIdHandlerTests.cs" />
-  </ItemGroup>
-
 </Project>
