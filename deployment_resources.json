@@ -494,6 +494,7 @@
           "authorization_type": "cognito_authorizer",
           "integration_type": "lambda",
           "lambda_name": "api-handler",
+          "lambda_alias": "${lambdas_alias_name}",
           "api_key_required": false,
           "method_request_parameters": {},
           "integration_request_body_template": {},

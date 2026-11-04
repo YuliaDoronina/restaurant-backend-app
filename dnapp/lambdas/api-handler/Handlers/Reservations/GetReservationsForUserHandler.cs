@@ -16,12 +16,15 @@ using APIHandler.Services.Orders;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace APIHandler.Handlers.Reservations;
 
 public class GetReservationsForUserHandler : IApiRequestHandler
 {
+    private const int MaxConcurrentReservationConversions = 5;
+
     private static readonly string ReservationsTableName = ResourceNames.ReservationsTableName;
     private static readonly string ReservationsCustomerIdGlobalIndex = ResourceNames.ReservationsCustomerIdGlobalIndex;
 
@@ -80,22 +83,13 @@ public class GetReservationsForUserHandler : IApiRequestHandler
 
         IEnumerable<Reservation> reservations = await _reservationRepository.GetReservationsByWaiterIdAsync(userId);
 
-        var result = new List<ReservationResponse>();
-        foreach (var reservation in reservations)
+        var convertedReservations = await ConvertReservationsAsync(reservations, context, skipCorruptedReservations: false);
+        if (convertedReservations.Any(response => response is null))
         {
-            try
-            {
-                var response = await ConvertToResponse(reservation);
-                result.Add(response);
-            }
-            catch (Exception ex)
-            {
-                context.Logger.LogLine($"Error converting reservation {reservation.Id} to response: {ex.Message}");
-                return ResponseBuilder.CreateErrorResponse(500, "Internal Server Error: Error while fetching reservation details.", context.Logger);
-            }
+            return ResponseBuilder.CreateErrorResponse(500, "Internal Server Error: Error while fetching reservation details.", context.Logger);
         }
 
-        return ResponseBuilder.CreateSuccessResponse(result);
+        return ResponseBuilder.CreateSuccessResponse(convertedReservations.Select(response => response!));
     }
 
     private async Task<APIGatewayProxyResponse> GetReservationsForCustomerAsync(string userId, ILambdaContext context)
@@ -103,25 +97,9 @@ public class GetReservationsForUserHandler : IApiRequestHandler
         try
         {
             var reservations = await _reservationRepository.GetReservationsByCustomerIdAsync(userId);
-            var result = new List<ReservationResponse>();
+            var convertedReservations = await ConvertReservationsAsync(reservations, context, skipCorruptedReservations: true);
 
-            foreach (var reservation in reservations)
-            {
-                try
-                {
-                    var fullReservation = await _reservationRepository.GetReservationByIdAsync(reservation.Id) ?? reservation;
-
-                    var response = await ConvertToResponse(fullReservation);
-                    result.Add(response);
-                }
-                catch (Exception ex)
-                {
-                    context.Logger.LogLine($"Skipping corrupted reservation {reservation.Id}: {ex.Message}");
-                    continue;
-                }
-            }
-
-            return ResponseBuilder.CreateSuccessResponse(result);
+            return ResponseBuilder.CreateSuccessResponse(convertedReservations.Where(response => response is not null).Select(response => response!));
         }
         catch (Exception ex)
         {
@@ -130,26 +108,55 @@ public class GetReservationsForUserHandler : IApiRequestHandler
         }
     }
 
+    private async Task<ReservationResponse?[]> ConvertReservationsAsync(
+        IEnumerable<Reservation> reservations,
+        ILambdaContext context,
+        bool skipCorruptedReservations)
+    {
+        using var semaphore = new SemaphoreSlim(MaxConcurrentReservationConversions);
+
+        return await Task.WhenAll(reservations.Select(async reservation =>
+        {
+            await semaphore.WaitAsync();
+            try
+            {
+                return await ConvertToResponse(reservation);
+            }
+            catch (Exception ex)
+            {
+                var action = skipCorruptedReservations ? "Skipping corrupted" : "Error converting";
+                context.Logger.LogLine($"{action} reservation {reservation.Id} to response: {ex.Message}");
+                return null;
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }));
+    }
+
     private async Task<ReservationResponse> ConvertToResponse(Reservation reservation)
     {
         try
         {
-            var location = await _locationService.GetLocationByTableIdAsync(reservation.TableId);
-            var reservationOrder = await _orderService.GetOrderByReservationIdAsync(reservation.Id);
+            var locationTask = _locationService.GetLocationByTableIdAsync(reservation.TableId);
+            var orderTask = _orderService.GetOrderByReservationIdAsync(reservation.Id);
+            var shouldLoadGroupReservation =
+                reservation.GuestCount > 1 && reservation.Status != ReservationStatus.Completed;
+            Task<GroupReservation?> groupReservationTask = shouldLoadGroupReservation
+                ? _groupReservationRepository.GetByReservationIdAsync(reservation.Id)
+                : Task.FromResult<GroupReservation?>(null);
 
-            bool guestInviteLinkAvailable = false;
-            int currentParticipants = 0;
-            if (reservation.GuestCount > 1 && reservation.Status != ReservationStatus.Completed)
-            {
-                GroupReservation? groupReservation = await _groupReservationRepository.GetByReservationIdAsync(reservation.Id);
-                if (groupReservation is not null)
-                {
-                    currentParticipants = _guestSessionRepository is null
-                        ? 0
-                        : 1 + await _guestSessionRepository.CountByGroupReservationId(groupReservation.GroupReservationId);
-                    guestInviteLinkAvailable = groupReservation.Status == GroupReservationStatus.Open;
-                }
-            }
+            await Task.WhenAll(locationTask, orderTask, groupReservationTask);
+
+            var location = await locationTask;
+            var reservationOrder = await orderTask;
+            var groupReservation = await groupReservationTask;
+            var currentParticipants = groupReservation is not null && _guestSessionRepository is not null
+                ? 1 + await _guestSessionRepository.CountByGroupReservationId(groupReservation.GroupReservationId)
+                : 0;
+            var guestInviteLinkAvailable =
+                groupReservation?.Status == GroupReservationStatus.Open;
 
             return ReservationMapper.ToReservationResponse(
                 reservation,
