@@ -1553,7 +1553,16 @@ public class GuestSessionServiceTests
             dish.State = DishState.Available;
 
         guestSession.IsSubmitted = false;
+        guestSession.IsOwnerSession = false;
         guestSession.GroupReservationId = groupReservation.GroupReservationId;
+        groupReservation.Status = GroupReservationStatus.Open;
+        Reservation reservation = new()
+        {
+            Id = groupReservation.ReservationId,
+            CustomerId = "reservation-owner",
+            TableId = "table-1",
+            WaiterId = "waiter-1"
+        };
 
         _mockGuestSessionRepository
             .Setup(r => r.GetByGuestSessionId(guestSession.Id))
@@ -1563,6 +1572,10 @@ public class GuestSessionServiceTests
            .Setup(r => r.GetGroupReservationByIdAsync(guestSession.GroupReservationId))
            .ReturnsAsync(groupReservation);
 
+        _mockReservationRepository
+            .Setup(r => r.GetReservationByIdAsync(groupReservation.ReservationId))
+            .ReturnsAsync(reservation);
+
         _mockDishRepository
             .Setup(d => d.GetDishesByIdsAsync(It.IsAny<IEnumerable<string>>()))
             .ReturnsAsync(dishes);
@@ -1570,12 +1583,59 @@ public class GuestSessionServiceTests
         GuestSession? session = null;
         _mockGuestSessionRepository
             .Setup(r => r.SaveCartAsync(It.IsAny<GuestSession>()))
-            .Callback<GuestSession>(s => session = s);
+            .Callback<GuestSession>(s => session = s)
+            .Returns(Task.CompletedTask);
 
         await _guestSessionService.SubmitCartAsync(guestSession.Id);
 
         Assert.NotNull(session);
         Assert.True(session.IsSubmitted);
+        _mockNotificationService.Verify(
+            service => service.CreateReservationUpdateNotificationAsync(
+                "reservation-owner",
+                reservation.Id,
+                $"{guestSession.GuestName} submitted their group pre-order.",
+                null),
+            Times.Once);
+    }
+
+    [Theory]
+    [AutoData]
+    public async Task SubmitCartAsync_SaveFails_DoesNotNotifyOwner(
+        GuestSession guestSession,
+        GroupReservation groupReservation)
+    {
+        Dish dish = new() { Id = "dish-1", State = DishState.Available };
+
+        guestSession.IsSubmitted = false;
+        guestSession.IsOwnerSession = false;
+        guestSession.GroupReservationId = groupReservation.GroupReservationId;
+        guestSession.Dishes = [new OrderItem { DishId = dish.Id, Quantity = 1 }];
+        groupReservation.Status = GroupReservationStatus.Open;
+
+        _mockGuestSessionRepository
+            .Setup(r => r.GetByGuestSessionId(guestSession.Id))
+            .ReturnsAsync(guestSession);
+        _mockGroupReservationRepository
+            .Setup(r => r.GetGroupReservationByIdAsync(guestSession.GroupReservationId))
+            .ReturnsAsync(groupReservation);
+        _mockDishRepository
+            .Setup(d => d.GetDishesByIdsAsync(It.IsAny<IEnumerable<string>>()))
+            .ReturnsAsync([dish]);
+        _mockGuestSessionRepository
+            .Setup(r => r.SaveCartAsync(It.IsAny<GuestSession>()))
+            .ThrowsAsync(new InvalidOperationException("Save failed."));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _guestSessionService.SubmitCartAsync(guestSession.Id));
+
+        _mockNotificationService.Verify(
+            service => service.CreateReservationUpdateNotificationAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>()),
+            Times.Never);
     }
 
     [Theory]

@@ -451,7 +451,8 @@ public class GuestSessionService(
 
     public async Task SubmitCartAsync(string guestSessionId)
     {
-        GuestSession guestSession = await GetGuestSessionAsync(guestSessionId);
+        (GuestSession guestSession, GroupReservation groupReservation) =
+            await GetGuestSessionAndGroupAsync(guestSessionId);
 
         if (!guestSession.Dishes.Any())
             throw new CartIsEmptyException();
@@ -460,6 +461,21 @@ public class GuestSessionService(
 
         guestSession.IsSubmitted = true;
         await guestSessionRepository.SaveCartAsync(guestSession);
+
+        if (!guestSession.IsOwnerSession)
+        {
+            Reservation reservation = await reservationRepository.GetReservationByIdAsync(
+                groupReservation.ReservationId)
+                ?? throw new ReservationNotFoundException("Parent reservation not found.");
+
+            if (!string.IsNullOrWhiteSpace(reservation.CustomerId))
+            {
+                await notificationService.CreateReservationUpdateNotificationAsync(
+                    reservation.CustomerId,
+                    reservation.Id,
+                    $"{guestSession.GuestName} submitted their group pre-order.");
+            }
+        }
     }
 
     private async Task<GroupReservation> GetGroupReservationAndValidateAsync(string groupReservationId)
@@ -496,15 +512,23 @@ public class GuestSessionService(
 
     private async Task<GuestSession> GetGuestSessionAsync(string sessionId)
     {
+        var result = await GetGuestSessionAndGroupAsync(sessionId);
+        return result.GuestSession;
+    }
+
+    private async Task<(GuestSession GuestSession, GroupReservation GroupReservation)> GetGuestSessionAndGroupAsync(
+        string sessionId)
+    {
         var session = await guestSessionRepository.GetByGuestSessionId(sessionId)
                       ?? throw new GuestSessionNotFoundException($"Guest session {sessionId} not found.");
 
         if (session.IsSubmitted)
             throw new GuestSessionSubmittedException();
 
-        await ValidateGroupReservationId(session.GroupReservationId);
+        GroupReservation groupReservation = await GetGroupReservationAndValidateAsync(
+            session.GroupReservationId);
 
-        return session;
+        return (session, groupReservation);
     }
 
     private async Task ValidateDishesAsync(IEnumerable<OrderItem> orders)
