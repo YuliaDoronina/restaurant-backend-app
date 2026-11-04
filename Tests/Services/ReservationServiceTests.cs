@@ -498,7 +498,7 @@ public class ReservationServiceTests
     }
 
     [Theory, AutoData]
-    public async Task CreateReservationAsync_InvalidStartTime_LessThan15MinutesInAdvance_ThrowsValidationException(
+    public async Task CreateReservationAsync_InvalidStartTime_LessThan30MinutesInAdvance_ThrowsValidationException(
         CreateReservationRequest request,
         string callerId,
         Location location,
@@ -508,7 +508,7 @@ public class ReservationServiceTests
         table.Id = request.TableId;
         table.LocationId = location.Id;
         waiter.LocationId = location.Id;
-        request.StartTime = DateTime.UtcNow.AddMinutes(10);
+        request.StartTime = DateTime.UtcNow.AddMinutes(20);
         request.EndTime = request.StartTime.AddHours(1);
         request.GuestCount = 2;
         table.Capacity = 4;
@@ -536,7 +536,7 @@ public class ReservationServiceTests
         var exception = await Assert.ThrowsAsync<ValidationException>(
             () => _reservationService.CreateReservationAsync(request, callerId, isWaiter: false, _mockLogger.Object));
 
-        Assert.Contains("15 minutes", exception.Message);
+        Assert.Contains("30 minutes", exception.Message);
     }
 
     [Theory, AutoData]

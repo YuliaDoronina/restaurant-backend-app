@@ -1082,6 +1082,8 @@ Response: `200 OK`
 ## Group & Guest Reservations
 
 ### `GET` /guest/invites/{token}
+Returns invitation details even when the guest capacity is full, so guests with an existing browser session can resume. Capacity is enforced when creating a new guest session.
+
 Response: `200 OK`
 ```json
 {
@@ -1106,6 +1108,7 @@ Response: 201 Created
   "sessionToken": "string"
 }
 ```
+Returns `400 Bad Request` with `errorCode: "GuestLimitExceeded"` when no guest slots remain.
 
 ### `GET` /guest/sessions/{guestSessionId}
 Response: `200 OK`
@@ -1277,3 +1280,17 @@ Response: 200 OK
 ```
 
 The response contains the updated group-session snapshot, using the same structure as `GET /guest/groups/{groupReservationId}/sessions`; `total` is recalculated after deletion. Errors: `400 Bad Request` for a session belonging to another group or an attempt to delete the Owner session, `401 Unauthorized` when authentication claims or a non-empty `sub` are missing, `403 Forbidden` when the authenticated user is not the reservation owner, `404 Not Found` when the group reservation, parent reservation, or session does not exist, `409 Conflict` when the group reservation is closed/expired or already submitted, and `500 Internal Server Error` for an unexpected internal error, including when the session is still found by a consistent read after deletion (`InvalidOperationException`).
+
+### `PATCH` /guest/groups/{groupReservationId}/sessions/{guestSessionId}/dishes
+Authorization scheme: HTTP Bearer; only the reservation owner may update a dish in any group session.
+
+Request body:
+
+```json
+{
+  "dishId": "dish-id",
+  "quantity": 2
+}
+```
+
+`quantity` is the target quantity; `0` removes the dish. The response is the updated group-session snapshot, using the same structure as `GET /guest/groups/{groupReservationId}/sessions`. Errors: `400 Bad Request` for invalid input or a session belonging to another group, `401 Unauthorized` when authentication claims are missing, `403 Forbidden` when the authenticated user is not the reservation owner, `404 Not Found` when the group reservation, parent reservation, session, or dish does not exist, `409 Conflict` when the group reservation is closed/expired or the session has already been submitted, and `500 Internal Server Error` for an unexpected internal error.

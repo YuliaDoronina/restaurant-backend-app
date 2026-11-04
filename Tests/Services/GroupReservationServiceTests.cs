@@ -97,9 +97,8 @@ public class GroupReservationServiceTests
         Order order = CreateOrder(group.ReservationId);
         GuestSession ownerSession = CreateSession("owner-session", true, true, ("dish-shared", 2), ("dish-owner", 1));
         GuestSession guestSession = CreateSession("guest-session", false, true, ("dish-shared", 3), ("dish-guest", 4));
-        GuestSession unsubmittedSession = CreateSession("unsubmitted-session", false, false, ("dish-ignored", 9));
 
-        SetupSubmitDependencies(group, reservation, order, ownerSession, guestSession, unsubmittedSession);
+        SetupSubmitDependencies(group, reservation, order, ownerSession, guestSession);
 
         // Act
         IReadOnlyList<GroupReservationOrderItemResponse> result = await _service.SubmitGroupReservationAsync(
@@ -115,12 +114,10 @@ public class GroupReservationServiceTests
         Assert.Equal(1, order.Dishes.Single(dish => dish.DishId == "dish-existing").Quantity);
         Assert.Equal(4, order.Dishes.Single(dish => dish.DishId == "dish-guest").Quantity);
         Assert.DoesNotContain(order.Dishes, dish => dish.DishId == "dish-owner");
-        Assert.DoesNotContain(order.Dishes, dish => dish.DishId == "dish-ignored");
         Assert.Equal(new[] { "dish-shared", "dish-existing", "dish-guest" }, result.Select(item => item.DishId));
         Assert.Equal(4, result.Single(item => item.DishId == "dish-shared").Quantity);
         Assert.Equal(1, result.Single(item => item.DishId == "dish-existing").Quantity);
         Assert.Equal(4, result.Single(item => item.DishId == "dish-guest").Quantity);
-        Assert.DoesNotContain(result, item => item.DishId == "dish-ignored");
         _groupReservationSubmitRepositoryMock.Verify(
             repository => repository.SubmitAsync(order, group, It.IsAny<string>()),
             Times.Once);
@@ -266,6 +263,36 @@ public class GroupReservationServiceTests
     }
 
     [Fact]
+    public async Task SubmitGroupReservationAsync_UnsubmittedGuestExists_RejectsSubmissionAndReleasesLease()
+    {
+        GroupReservation group = CreateGroupReservation(GroupReservationStatus.Open);
+        Reservation reservation = CreateReservation(group.ReservationId, "owner-1");
+        Order order = CreateOrder(group.ReservationId);
+        SetupSubmitDependencies(
+            group,
+            reservation,
+            order,
+            CreateSession("submitted", false, true, ("dish-1", 1)),
+            CreateSession("still-choosing", false, false, ("dish-2", 1)));
+        string? releasedAttemptId = null;
+        _groupReservationSubmitRepositoryMock
+            .Setup(repository => repository.ReleaseSubmitAsync(
+                group.GroupReservationId,
+                It.IsAny<string>()))
+            .Callback<string, string>((_, attemptId) => releasedAttemptId = attemptId)
+            .Returns(Task.CompletedTask);
+
+        ValidationException exception = await Assert.ThrowsAsync<ValidationException>(() =>
+            _service.SubmitGroupReservationAsync(group.GroupReservationId, group.ReservationId, "owner-1"));
+
+        Assert.Equal("All guests must submit their pre-order before the group can be confirmed.", exception.Message);
+        Assert.Equal(1, order.Dishes.Single(dish => dish.DishId == "dish-shared").Quantity);
+        VerifySubmitNotCalled();
+        Assert.False(string.IsNullOrWhiteSpace(releasedAttemptId));
+        Assert.Equal(GroupReservationStatus.Open, group.Status);
+    }
+
+    [Fact]
     public async Task SubmitGroupReservationAsync_OnlyOwnerSessionIsSubmitted_ThrowsValidationAndReleasesLease()
     {
         // Arrange
@@ -316,12 +343,30 @@ public class GroupReservationServiceTests
     }
 
     [Fact]
-    public async Task SubmitGroupReservationAsync_OrderNotFound_ThrowsValidationWithoutSubmitting()
+    public async Task SubmitGroupReservationAsync_OrderNotFound_CreatesConsolidatedOrderFromSubmittedGuests()
     {
         // Arrange
         GroupReservation group = CreateGroupReservation(GroupReservationStatus.Open);
         Reservation reservation = CreateReservation(group.ReservationId, "owner-1");
+        reservation.StartTime = new DateTime(2026, 11, 3, 18, 0, 0);
+        reservation.EndTime = new DateTime(2026, 11, 3, 19, 0, 0);
         GuestSession session = CreateSession("submitted", false, true, ("dish-1", 1));
+        Table table = new()
+        {
+            Id = reservation.TableId,
+            LocationId = "location-1",
+            TableNumber = 4,
+            Capacity = 6
+        };
+        Location location = new()
+        {
+            Id = table.LocationId,
+            Address = "Rustaveli Avenue 48",
+            Description = string.Empty,
+            AverageOccupancy = string.Empty
+        };
+        Order? submittedOrder = null;
+
         _groupReservationRepositoryMock
             .Setup(repository => repository.GetGroupReservationByIdAsync(group.GroupReservationId))
             .ReturnsAsync(group);
@@ -334,14 +379,39 @@ public class GroupReservationServiceTests
         _orderRepositoryMock
             .Setup(repository => repository.GetOrderByReservationIdAsync(group.ReservationId))
             .ReturnsAsync((Order?)null);
+        _tableRepositoryMock
+            .Setup(repository => repository.GetTableAsync(reservation.TableId))
+            .ReturnsAsync(table);
+        _locationServiceMock
+            .Setup(service => service.GetLocationByIdAsync(table.LocationId))
+            .ReturnsAsync(location);
+        _groupReservationSubmitRepositoryMock
+            .Setup(repository => repository.SubmitAsync(
+                It.IsAny<Order>(),
+                group,
+                It.IsAny<string>()))
+            .Callback<Order, GroupReservation, string>((order, _, _) => submittedOrder = order)
+            .Returns(Task.CompletedTask);
 
         // Act
-        ValidationException exception = await Assert.ThrowsAsync<ValidationException>(() =>
-            _service.SubmitGroupReservationAsync(group.GroupReservationId, group.ReservationId, "owner-1"));
+        IReadOnlyList<GroupReservationOrderItemResponse> result = await _service.SubmitGroupReservationAsync(
+            group.GroupReservationId,
+            group.ReservationId,
+            "owner-1");
 
         // Assert
-        Assert.Equal("Order was not found for the reservation.", exception.Message);
-        VerifySubmitNotCalled();
+        Assert.NotNull(submittedOrder);
+        Assert.Equal(group.ReservationId, submittedOrder.ReservationId);
+        Assert.Equal("owner-1", submittedOrder.CustomerId);
+        Assert.Equal(location.Address, submittedOrder.ReservationAddress);
+        Assert.False(string.IsNullOrWhiteSpace(submittedOrder.ReservationTime));
+        Assert.Equal(OrderStatus.SubmittedByCustomer, submittedOrder.Status);
+        Assert.Equal(new[] { "dish-1" }, submittedOrder.Dishes.Select(dish => dish.DishId));
+        Assert.Equal(new[] { "dish-1" }, result.Select(item => item.DishId));
+        Assert.Equal(GroupReservationStatus.Submitted, group.Status);
+        _groupReservationSubmitRepositoryMock.Verify(
+            repository => repository.SubmitAsync(submittedOrder, group, It.IsAny<string>()),
+            Times.Once);
     }
 
     private void SetupSubmitDependencies(
@@ -686,33 +756,8 @@ public class GroupReservationServiceTests
         await Assert.ThrowsAsync<GroupReservationExpiredException>(() => _service.GetGroupReservationByTokenAsync(groupReservation.ReservationToken));
     }
 
-    [Theory]
-    [AutoData]
-    public async Task GetGroupReservationByTokenAsync_WhenGuestCountIsMax_ThrowsGuestLimitExceeded(GroupReservation groupReservation, Reservation reservation)
-    {
-        groupReservation.Status = GroupReservationStatus.Open;
-        groupReservation.ReservationId = reservation.Id;
-
-        _groupReservationRepositoryMock
-            .Setup(r => r.GetGroupReservationByTokenAsync(groupReservation.ReservationToken))
-            .ReturnsAsync(groupReservation);
-
-        _reservationRepositoryMock
-            .Setup(r => r.GetReservationByIdAsync(reservation.Id))
-            .ReturnsAsync(reservation);
-
-        _guestSessionRepositoryMock
-            .Setup(r => r.CountByGroupReservationId(groupReservation.GroupReservationId))
-            .ReturnsAsync(reservation.GuestCount);
-
-        await Assert.ThrowsAsync<GuestLimitExceededException>(() => _service.GetGroupReservationByTokenAsync(groupReservation.ReservationToken));
-    }
-
-    [Theory]
-    [InlineData(0, true)]
-    [InlineData(1, false)]
-    [InlineData(2, false)]
-    public async Task GetGroupReservationByTokenAsync_CapacityTwo_AllowsOnlyFirstGuest(int joinedGuests, bool expectedAllowed)
+    [Fact]
+    public async Task GetGroupReservationByTokenAsync_WhenCapacityIsFull_ReturnsInvite()
     {
         // Arrange
         GroupReservation groupReservation = new()
@@ -731,27 +776,19 @@ public class GroupReservationServiceTests
         _reservationRepositoryMock
             .Setup(r => r.GetReservationByIdAsync("reservation-1"))
             .ReturnsAsync(reservation);
-        // Repository contract: only guest sessions are counted (Owner rows excluded).
         _guestSessionRepositoryMock
             .Setup(r => r.CountByGroupReservationId("group-1"))
-            .ReturnsAsync(joinedGuests);
+            .ReturnsAsync(reservation.GuestCount);
         _tableRepositoryMock
             .Setup(r => r.GetTableAsync("table-1"))
             .ReturnsAsync(table);
 
-        // Act
-        Func<Task<APIHandler.Models.GuestReservation.GetGroupReservationResponse>> act = () => _service.GetGroupReservationByTokenAsync("token-1");
+        var response = await _service.GetGroupReservationByTokenAsync("token-1");
 
-        // Assert
-        if (expectedAllowed)
-        {
-            var response = await act();
-            Assert.Equal(2, response.MaxGuestCount);
-        }
-        else
-        {
-            await Assert.ThrowsAsync<GuestLimitExceededException>(act);
-        }
+        Assert.Equal(2, response.MaxGuestCount);
+        _guestSessionRepositoryMock.Verify(
+            repository => repository.CountByGroupReservationId("group-1"),
+            Times.Never);
     }
 
     [Theory]

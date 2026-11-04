@@ -6,4 +6,7 @@ public class ReservationGuestSessionIdResponse
 {
     [JsonPropertyName("guestSessionId")]
     public required string GuestSessionId { get; set; }
+
+    [JsonPropertyName("groupReservationId")]
+    public required string GroupReservationId { get; set; }
 }

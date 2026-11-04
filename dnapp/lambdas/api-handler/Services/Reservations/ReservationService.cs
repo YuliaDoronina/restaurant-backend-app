@@ -247,8 +247,8 @@ public class ReservationService : IReservationService
 
     private static void ValidateTimes(Reservation reservation)
     {
-        if ((reservation.StartTime.ToUniversalTime() - DateTime.UtcNow).TotalMinutes < 15)
-            throw new ValidationException($"Reservations must be made at least 15 minutes in advance. Requested start time: {reservation.StartTime:HH:mm}, Current time: {DateTime.UtcNow:HH:mm} UTC.");
+        if (reservation.StartTime.ToUniversalTime() - DateTime.UtcNow < ReservationTimeRules.MinimumLeadTime)
+            throw new ValidationException($"Reservations must be made at least 30 minutes in advance. Requested start time: {reservation.StartTime:HH:mm}, Current time: {DateTime.UtcNow:HH:mm} UTC.");
         if (reservation.EndTime <= reservation.StartTime)
             throw new ValidationException($"End time ({reservation.EndTime:HH:mm}) must be after start time ({reservation.StartTime:HH:mm}).");
     }

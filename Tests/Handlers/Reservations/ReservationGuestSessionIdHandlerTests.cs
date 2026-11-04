@@ -28,7 +28,11 @@ public class ReservationGuestSessionIdHandlerTests
     [Fact]
     public async Task HandleRequest_ReservationOwner_ReturnsGuestSessionId()
     {
-        ReservationGuestSessionIdResponse expected = new() { GuestSessionId = "owner-session-1" };
+        ReservationGuestSessionIdResponse expected = new()
+        {
+            GuestSessionId = "owner-session-1",
+            GroupReservationId = "group-1"
+        };
         _guestSessionService
             .Setup(service => service.GetReservationGuestSessionIdAsync(OwnerUserId, ReservationId))
             .ReturnsAsync(expected);
@@ -38,6 +42,7 @@ public class ReservationGuestSessionIdHandlerTests
         Assert.Equal(200, response.StatusCode);
         using JsonDocument document = JsonDocument.Parse(response.Body);
         Assert.Equal("owner-session-1", document.RootElement.GetProperty("guestSessionId").GetString());
+        Assert.Equal("group-1", document.RootElement.GetProperty("groupReservationId").GetString());
         _guestSessionService.Verify(
             service => service.GetReservationGuestSessionIdAsync(OwnerUserId, ReservationId),
             Times.Once);

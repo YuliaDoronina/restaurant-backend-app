@@ -67,10 +67,9 @@ public class EditReservationHandler : IApiRequestHandler
             return ResponseBuilder.CreateErrorResponse(403, "Not authorized to edit this reservation.", context.Logger);
         }
 
-        var timeDiffMinutes = (editRequest.StartTime.ToUniversalTime() - DateTime.UtcNow).TotalMinutes;
-        if (timeDiffMinutes < 15)
+        if (editRequest.StartTime.ToUniversalTime() - DateTime.UtcNow < ReservationTimeRules.MinimumLeadTime)
         {
-            return ResponseBuilder.CreateErrorResponse(400, "Must edit at least 15 minutes in advance.", context.Logger);
+            return ResponseBuilder.CreateErrorResponse(400, "Must edit at least 30 minutes in advance.", context.Logger);
         }
 
         if (editRequest.StartTime >= editRequest.EndTime)

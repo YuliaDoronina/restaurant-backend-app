@@ -57,6 +57,10 @@ public class OrderService : IOrderService
         }
 
         await _orderRepository.SaveOrderAsync(order);
+        await NotifyReservationOwnerAsync(
+            reservation,
+            order,
+            "Restaurant confirmed a dish in your pre-order.");
         logger.Log($"Confirmed dish {dishId} in order {order.OrderId}.");
     }
 
@@ -78,6 +82,10 @@ public class OrderService : IOrderService
         }
 
         await _orderRepository.SaveOrderAsync(order);
+        await NotifyReservationOwnerAsync(
+            reservation,
+            order,
+            "Restaurant declined a dish in your pre-order.");
         logger.Log($"Canceled dish {dishId} in order {order.OrderId}.");
     }
 
@@ -277,6 +285,21 @@ public class OrderService : IOrderService
         var order = await _orderRepository.GetOrderByReservationIdAsync(reservationId);
 
         return order ?? throw new ValidationException("Order not found.");
+    }
+
+    private Task NotifyReservationOwnerAsync(
+        Reservation reservation,
+        Order order,
+        string message)
+    {
+        if (string.IsNullOrWhiteSpace(reservation.CustomerId))
+            return Task.CompletedTask;
+
+        return _notificationService.CreateReservationUpdateNotificationAsync(
+            reservation.CustomerId,
+            reservation.Id,
+            message,
+            order.OrderId);
     }
 
     private static void EnsurePreOrderEditable(DateTime reservationStartTime)

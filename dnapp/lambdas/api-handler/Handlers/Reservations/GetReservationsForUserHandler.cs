@@ -29,17 +29,20 @@ public class GetReservationsForUserHandler : IApiRequestHandler
     private readonly ILocationService _locationService;
     private readonly IOrderService _orderService;
     private readonly IGroupReservationRepository _groupReservationRepository;
+    private readonly IGuestSessionRepository? _guestSessionRepository;
 
     public GetReservationsForUserHandler(
         IReservationRepository reservationRepository,
         ILocationService locationService,
         IOrderService orderService,
-        IGroupReservationRepository groupReservationRepository)
+        IGroupReservationRepository groupReservationRepository,
+        IGuestSessionRepository? guestSessionRepository = null)
     {
         _reservationRepository = reservationRepository ?? throw new ArgumentNullException(nameof(reservationRepository));
         _locationService = locationService ?? throw new ArgumentNullException(nameof(locationService));
         _orderService = orderService ?? throw new ArgumentNullException(nameof(orderService));
         _groupReservationRepository = groupReservationRepository ?? throw new ArgumentNullException(nameof(groupReservationRepository));
+        _guestSessionRepository = guestSessionRepository;
     }
 
     public async Task<APIGatewayProxyResponse> HandleRequest(APIGatewayProxyRequest request, ILambdaContext context)
@@ -135,14 +138,25 @@ public class GetReservationsForUserHandler : IApiRequestHandler
             var reservationOrder = await _orderService.GetOrderByReservationIdAsync(reservation.Id);
 
             bool guestInviteLinkAvailable = false;
+            int currentParticipants = 0;
             if (reservation.GuestCount > 1 && reservation.Status != ReservationStatus.Completed)
             {
                 GroupReservation? groupReservation = await _groupReservationRepository.GetByReservationIdAsync(reservation.Id);
                 if (groupReservation is not null)
+                {
+                    currentParticipants = _guestSessionRepository is null
+                        ? 0
+                        : 1 + await _guestSessionRepository.CountByGroupReservationId(groupReservation.GroupReservationId);
                     guestInviteLinkAvailable = groupReservation.Status == GroupReservationStatus.Open;
+                }
             }
 
-            return ReservationMapper.ToReservationResponse(reservation, location.Address, reservationOrder, guestInviteLinkAvailable: guestInviteLinkAvailable);
+            return ReservationMapper.ToReservationResponse(
+                reservation,
+                location.Address,
+                reservationOrder,
+                guestInviteLinkAvailable: guestInviteLinkAvailable,
+                currentParticipants: currentParticipants);
         }
         catch (Exception ex)
         {

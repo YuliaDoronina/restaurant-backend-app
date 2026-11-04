@@ -8,6 +8,7 @@ using APIHandler.Repositories.GuestSessions;
 using APIHandler.Repositories.Reservations;
 using APIHandler.Repositories.Tables;
 using APIHandler.Services.GuestSessions;
+using APIHandler.Services.Notifications;
 using Moq;
 
 namespace APIHandler.Tests.Services;
@@ -31,7 +32,8 @@ public class ReservationGuestSessionIdServiceTests
             Mock.Of<IDishRepository>(),
             _reservationRepository.Object,
             Mock.Of<IUserRepository>(),
-            Mock.Of<ITableRepository>());
+            Mock.Of<ITableRepository>(),
+            Mock.Of<INotificationService>());
     }
 
     [Fact]

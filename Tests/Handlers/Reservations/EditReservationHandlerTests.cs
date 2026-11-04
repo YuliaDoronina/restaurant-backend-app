@@ -183,6 +183,25 @@ public sealed class EditReservationHandlerTests : IDisposable
         Assert.Equal(exception.Message, GetErrorMessage(response));
     }
 
+    [Fact]
+    public async Task HandleRequest_WhenRequestedStartIsLessThan30MinutesAway_ReturnsBadRequest()
+    {
+        ConfigureSuccessfulEdit(previousGuestCount: 1);
+
+        APIGatewayProxyResponse response = await _handler.HandleRequest(
+            CreateRequest(2, DateTime.UtcNow.AddMinutes(20)),
+            _lambdaContext.Object);
+
+        Assert.Equal(400, response.StatusCode);
+        Assert.Contains("30 minutes", GetErrorMessage(response));
+        _dbContext.Verify(
+            context => context.SaveAsync(
+                It.IsAny<Reservation>(),
+                It.IsAny<SaveConfig>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("reservationsTable", _originalReservationsTable);
@@ -248,13 +267,13 @@ public sealed class EditReservationHandlerTests : IDisposable
             });
     }
 
-    private static APIGatewayProxyRequest CreateRequest(int guestCount) => new()
+    private static APIGatewayProxyRequest CreateRequest(int guestCount, DateTime? startTime = null) => new()
     {
         Body = JsonSerializer.Serialize(new EditReservationRequest
         {
             ReservationId = ReservationId,
-            StartTime = DateTime.UtcNow.AddHours(1),
-            EndTime = DateTime.UtcNow.AddHours(2),
+            StartTime = startTime ?? DateTime.UtcNow.AddHours(1),
+            EndTime = (startTime ?? DateTime.UtcNow.AddHours(1)).AddHours(1),
             GuestCount = guestCount
         }),
         RequestContext = new APIGatewayProxyRequest.ProxyRequestContext

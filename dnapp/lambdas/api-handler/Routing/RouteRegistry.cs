@@ -196,6 +196,7 @@ public static class RouteRegistry
             new RouteHandler(new Route(HttpMethods.GET, "/guest/sessions/{guestSessionId}/menu"), ActivatorUtilities.CreateInstance<GetGuestSessionMenuHandler>(provider)),
             new RouteHandler(new Route(HttpMethods.GET, "/guest/groups/{groupReservationId}/status"), ActivatorUtilities.CreateInstance<GetGroupReservationStatusHandler>(provider)),
             new RouteHandler(new Route(HttpMethods.GET, "/guest/groups/{groupReservationId}/sessions"), ActivatorUtilities.CreateInstance<GetGroupSessionsHandler>(provider)),
+            new RouteHandler(new Route(HttpMethods.PATCH, "/guest/groups/{groupReservationId}/sessions/{guestSessionId}/dishes"), ActivatorUtilities.CreateInstance<UpdateGroupSessionDishHandler>(provider)),
             new RouteHandler(new Route(HttpMethods.GET, "/guest/invites/{token}"), ActivatorUtilities.CreateInstance<GetGroupReservationHandler>(provider)),
             new RouteHandler(new Route(HttpMethods.GET, "/reservations/{reservationId}/invite-token"), ActivatorUtilities.CreateInstance<GetInviteTokenHandler>(provider)),
             new RouteHandler(new Route(HttpMethods.DELETE, "/guest/groups/{groupReservationId}/sessions/{guestSessionId}"), ActivatorUtilities.CreateInstance<DeleteGuestSessionHandler>(provider))

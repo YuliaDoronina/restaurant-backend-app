@@ -3,8 +3,10 @@ using APIHandler.Constants;
 using APIHandler.Constants.Orders;
 using APIHandler.Entities;
 using APIHandler.Exceptions;
+using APIHandler.Mappers;
 using APIHandler.Models.GroupReservation;
 using APIHandler.Models.GuestReservation;
+using APIHandler.Models.Orders;
 using APIHandler.Repositories.GroupReservations;
 using APIHandler.Repositories.GuestSessions;
 using APIHandler.Repositories.Orders;
@@ -39,14 +41,8 @@ public class GroupReservationService(
         if (groupReservation.Status != GroupReservationStatus.Open)
             throw new GroupReservationExpiredException();
 
-        Task<Reservation?> reservationTask = reservationRepository.GetReservationByIdAsync(groupReservation.ReservationId);
-        Task<int> countTask = guestSessionRepository.CountByGroupReservationId(groupReservation.GroupReservationId);
-
-        Reservation reservation = await reservationTask ?? throw new ValidationException("Associated reservation not found.");
-        int joinedGuestsCount = await countTask;
-
-        if (joinedGuestsCount + 1 >= reservation.GuestCount)
-            throw new GuestLimitExceededException();
+        Reservation reservation = await reservationRepository.GetReservationByIdAsync(groupReservation.ReservationId)
+            ?? throw new ValidationException("Associated reservation not found.");
 
         Table table = await tableRepository.GetTableAsync(reservation.TableId)
             ?? throw new InvalidOperationException("Associated table not found.");
@@ -174,7 +170,7 @@ public class GroupReservationService(
         {
             await submitRepository.BeginSubmitAsync(groupReservation, attemptId);
             acquired = true;
-            return await SubmitGroupOrderAsync(groupReservation, submitRepository, attemptId);
+            return await SubmitGroupOrderAsync(groupReservation, reservation, submitRepository, attemptId);
         }
         catch (Exception submissionException)
         {
@@ -208,22 +204,29 @@ public class GroupReservationService(
 
     private async Task<IReadOnlyList<GroupReservationOrderItemResponse>> SubmitGroupOrderAsync(
         GroupReservation groupReservation,
+        Reservation reservation,
         IGroupReservationSubmitRepository submitRepository,
         string attemptId)
     {
         IOrderRepository orders = orderRepository
             ?? throw new InvalidOperationException("Order repository is not configured.");
 
-        List<GuestSession> submittedSessions = (await guestSessionRepository.GetAllByGroupReservationIdConsistentAsync(groupReservation.GroupReservationId))
-            .Where(session => session.IsSubmitted && !session.IsOwnerSession)
+        List<GuestSession> guestSessions = (await guestSessionRepository.GetAllByGroupReservationIdConsistentAsync(groupReservation.GroupReservationId))
+            .Where(session => !session.IsOwnerSession)
+            .ToList();
+        List<GuestSession> submittedSessions = guestSessions
+            .Where(session => session.IsSubmitted)
             .ToList();
         if (submittedSessions.Count == 0)
             throw new ValidationException("No submitted guest sessions were found.");
+        if (guestSessions.Any(session => !session.IsSubmitted))
+            throw new ValidationException("All guests must submit their pre-order before the group can be confirmed.");
         if (!submittedSessions.Any(session => session.Dishes?.Count > 0))
             throw new ValidationException("Submitted guest sessions contain no dishes.");
 
-        Order order = await orders.GetOrderByReservationIdAsync(groupReservation.ReservationId)
-            ?? throw new ValidationException("Order was not found for the reservation.");
+        Order? order = await orders.GetOrderByReservationIdAsync(groupReservation.ReservationId);
+        if (order is null)
+            order = await CreateOrderForGroupSubmitAsync(reservation);
 
         order.Dishes = MergeSubmittedDishes(order.Dishes, submittedSessions);
 
@@ -232,6 +235,24 @@ public class GroupReservationService(
         await submitRepository.SubmitAsync(order, groupReservation, attemptId);
 
         return MapOrderItems(order.Dishes);
+    }
+
+    private async Task<Order> CreateOrderForGroupSubmitAsync(Reservation reservation)
+    {
+        Table table = await tableRepository.GetTableAsync(reservation.TableId)
+            ?? throw new ValidationException("Associated table not found.");
+        Location location = await locationService.GetLocationByIdAsync(table.LocationId)
+            ?? throw new ValidationException("Location not found for the reservation's table.");
+        string customerId = reservation.CustomerId
+            ?? throw new ValidationException("Reservation owner was not found.");
+        string reservationTime =
+            $"{reservation.StartTime:MMM dd, yyyy, h:mm tt} - {reservation.EndTime:h:mm tt}";
+
+        return OrderMapper.ToOrderEntity(
+            new CreateOrderRequest { ReservationId = reservation.Id },
+            customerId,
+            location.Address,
+            reservationTime);
     }
 
     private static void ValidateSubmitRequest(

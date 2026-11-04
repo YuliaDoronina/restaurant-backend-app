@@ -22,10 +22,17 @@ public class GetAvailableTimeSlotsHandler : IApiRequestHandler
     private static readonly TimeSpan GapDuration = TimeSpan.FromMinutes(15);
 
     private readonly IDynamoDBContext _dbContext;
+    private readonly Func<DateTime> _utcNow;
 
     public GetAvailableTimeSlotsHandler(IDynamoDBContext dbContext)
+        : this(dbContext, () => DateTime.UtcNow)
+    {
+    }
+
+    public GetAvailableTimeSlotsHandler(IDynamoDBContext dbContext, Func<DateTime> utcNow)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
     }
 
     public async Task<APIGatewayProxyResponse> HandleRequest(APIGatewayProxyRequest request, ILambdaContext context)
@@ -63,6 +70,7 @@ public class GetAvailableTimeSlotsHandler : IApiRequestHandler
         var workingDayEnd = new DateTime(startTime.Year, startTime.Month, startTime.Day, 22, 0, 0, DateTimeKind.Unspecified);
 
         var slots = new List<TimeSlotResponse>();
+        var minimumStartTimeUtc = _utcNow().ToUniversalTime().Add(ReservationTimeRules.MinimumLeadTime);
         var marginTo90Minutes =
             ReservationDuration.TotalMinutes - ((startTime - workingDayStart).TotalMinutes % ReservationDuration.TotalMinutes);
         DateTime current;
@@ -85,11 +93,15 @@ public class GetAvailableTimeSlotsHandler : IApiRequestHandler
 
             if (overlappingReservation == null)
             {
-                slots.Add(new TimeSlotResponse
+                var potentialStartUtc = DateTime.SpecifyKind(potentialStart, startTime.Kind).ToUniversalTime();
+                if (potentialStartUtc >= minimumStartTimeUtc)
                 {
-                    Start = potentialStart,
-                    End = potentialEnd
-                });
+                    slots.Add(new TimeSlotResponse
+                    {
+                        Start = potentialStart,
+                        End = potentialEnd
+                    });
+                }
 
                 current = potentialEnd + GapDuration;
             }
