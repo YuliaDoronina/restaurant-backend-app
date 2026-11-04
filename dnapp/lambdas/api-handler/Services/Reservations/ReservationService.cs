@@ -11,6 +11,7 @@ using APIHandler.Repositories.Auth;
 using APIHandler.Repositories.Locations;
 using APIHandler.Repositories.Reservations;
 using APIHandler.Services.GroupReservations;
+using APIHandler.Services.GuestSessions;
 using APIHandler.Services.Locations;
 using APIHandler.Services.Orders;
 using APIHandler.Services.Waiters;
@@ -31,6 +32,7 @@ public class ReservationService : IReservationService
     private readonly IOrderService _orderService;
 
     private readonly IGroupReservationService _groupReservationService;
+    private readonly IGuestSessionService _guestSessionService;
 
     public ReservationService(
         IReservationRepository reservationRepository,
@@ -39,7 +41,8 @@ public class ReservationService : IReservationService
         IWaiterService waiterService,
         ILocationService locationService,
         IOrderService orderService,
-        IGroupReservationService groupReservationService)
+        IGroupReservationService groupReservationService,
+        IGuestSessionService guestSessionService)
     {
         _reservationRepository = reservationRepository ?? throw new ArgumentNullException(nameof(reservationRepository));
         _locationRepository = locationRepository ?? throw new ArgumentNullException(nameof(locationRepository));
@@ -48,6 +51,7 @@ public class ReservationService : IReservationService
         _locationService = locationService ?? throw new ArgumentNullException(nameof(locationService));
         _orderService = orderService ?? throw new ArgumentNullException(nameof(orderService));
         _groupReservationService = groupReservationService ?? throw new ArgumentNullException(nameof(groupReservationService));
+        _guestSessionService = guestSessionService ?? throw new ArgumentNullException(nameof(guestSessionService));
     }
 
     public async Task<ReservationResponse> CreateReservationAsync(CreateReservationRequest request, string callerId, bool isWaiter, ILambdaLogger logger)
@@ -70,7 +74,15 @@ public class ReservationService : IReservationService
         await UpdateWaiterReservationsAsync(reservation.WaiterId, reservation.Id);
 
         if (request.GuestCount >= 2)
-            await _groupReservationService.CreateGroupReservationAsync(reservation.Id);
+        {
+            GroupReservation groupReservation = await _groupReservationService.CreateGroupReservationAsync(reservation.Id);
+            if (!string.IsNullOrWhiteSpace(reservation.CustomerId))
+            {
+                await _guestSessionService.EnsureOwnerSessionAsync(
+                    reservation.CustomerId,
+                    groupReservation);
+            }
+        }
 
         return ReservationMapper.ToReservationResponse(reservation, location.Address);
     }
@@ -117,13 +129,37 @@ public class ReservationService : IReservationService
         if (reservation.Status == ReservationStatus.Reserved)
         {
             if (reservation.GuestCount >= 2)
-                await _groupReservationService.CreateGroupReservationIfDoesNotExistAsync(reservation.CustomerId, reservation.Id);
+            {
+                GroupReservation groupReservation =
+                    await _groupReservationService.CreateGroupReservationIfDoesNotExistAsync(
+                        reservation.CustomerId,
+                        reservation.Id);
+                await _guestSessionService.EnsureOwnerSessionAsync(reservation.CustomerId, groupReservation);
+            }
 
             return true;
         }
 
         await _groupReservationService.CloseGroupReservationAsync(reservation.Id);
         return true;
+    }
+
+    public async Task EnsureGroupReservationForEditAsync(Reservation reservation)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+
+        if (reservation.Status != ReservationStatus.Reserved ||
+            reservation.GuestCount < 2 ||
+            string.IsNullOrWhiteSpace(reservation.CustomerId))
+        {
+            return;
+        }
+
+        GroupReservation groupReservation =
+            await _groupReservationService.CreateGroupReservationIfDoesNotExistAsync(
+                reservation.CustomerId,
+                reservation.Id);
+        await _guestSessionService.EnsureOwnerSessionAsync(reservation.CustomerId, groupReservation);
     }
 
     public async Task<ReservationResponse> UpdateReservationTableAsync(string callerId, string reservationId, string newTableId, ILambdaLogger logger)
@@ -211,8 +247,8 @@ public class ReservationService : IReservationService
 
     private static void ValidateTimes(Reservation reservation)
     {
-        if ((reservation.StartTime.ToUniversalTime() - DateTime.UtcNow).TotalMinutes < 15)
-            throw new ValidationException($"Reservations must be made at least 15 minutes in advance. Requested start time: {reservation.StartTime:HH:mm}, Current time: {DateTime.UtcNow:HH:mm} UTC.");
+        if (reservation.StartTime.ToUniversalTime() - DateTime.UtcNow < ReservationTimeRules.MinimumLeadTime)
+            throw new ValidationException($"Reservations must be made at least 30 minutes in advance. Requested start time: {reservation.StartTime:HH:mm}, Current time: {DateTime.UtcNow:HH:mm} UTC.");
         if (reservation.EndTime <= reservation.StartTime)
             throw new ValidationException($"End time ({reservation.EndTime:HH:mm}) must be after start time ({reservation.StartTime:HH:mm}).");
     }

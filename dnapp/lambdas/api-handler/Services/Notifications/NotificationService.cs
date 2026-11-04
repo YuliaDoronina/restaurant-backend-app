@@ -69,6 +69,30 @@ public class NotificationService : INotificationService
         return notification;
     }
 
+    public async Task CreateReservationUpdateNotificationAsync(
+        string customerId,
+        string reservationId,
+        string message,
+        string? orderId = null)
+    {
+        EnsureNotNull(customerId, nameof(customerId));
+        EnsureNotNull(reservationId, nameof(reservationId));
+        EnsureNotNull(message, nameof(message));
+
+        var notification = new Entities.Notification
+        {
+            Id = Guid.NewGuid().ToString(),
+            UserId = customerId,
+            Message = message,
+            OrderId = orderId,
+            ReservationId = reservationId,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        ValidateNotification(notification);
+        await _notificationRepository.SaveNotificationAsync(notification);
+    }
+
     public async Task<IEnumerable<Entities.Notification>> GetUnreadNotificationsAsync(string userId)
     {
         EnsureNotNull(userId, nameof(userId));
@@ -145,7 +169,6 @@ public class NotificationService : INotificationService
 
         EnsureNotNull(notification.UserId, "UserId");
         EnsureNotNull(notification.Message, "Message");
-        EnsureNotNull(notification.OrderId, "OrderId");
         EnsureNotNull(notification.ReservationId, "ReservationId");
     }
 

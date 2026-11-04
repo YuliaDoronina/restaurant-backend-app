@@ -32,6 +32,13 @@ public class OrderServiceTests
         _mockDishService = new Mock<IDishService>();
         _mockNotificationService = new Mock<INotificationService>();
         _mockLogger = new Mock<ILambdaLogger>();
+        _mockNotificationService
+            .Setup(service => service.CreateReservationUpdateNotificationAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>()))
+            .Returns(Task.CompletedTask);
 
         _mockLambdaContext = new Mock<ILambdaContext>();
         _mockLambdaContext.Setup(c => c.Logger).Returns(_mockLogger.Object);
@@ -84,6 +91,7 @@ public class OrderServiceTests
         reservation.Id = reservationId;
         reservation.TableId = "table-1";
         reservation.WaiterId = callerId;
+        reservation.CustomerId = "customer-1";
         reservation.StartTime = DateTime.UtcNow.AddHours(1);
 
         order.OrderId = "ord-1";
@@ -92,12 +100,26 @@ public class OrderServiceTests
 
         _mockReservationRepository.Setup(r => r.GetReservationByIdAsync(reservationId)).ReturnsAsync(reservation);
         _mockOrderRepository.Setup(r => r.GetOrderByReservationIdAsync(reservationId)).ReturnsAsync(order);
+        _mockNotificationService
+            .Setup(service => service.CreateReservationUpdateNotificationAsync(
+                "customer-1",
+                reservationId,
+                "Restaurant confirmed a dish in your pre-order.",
+                "ord-1"))
+            .Returns(Task.CompletedTask);
 
         await _orderService.ConfirmPreOrderDishAsync(callerId, reservationId, dishId, _mockLogger.Object);
 
         Assert.Equal(OrderItemState.Confirmed, order.Dishes[0].State);
         Assert.Equal(OrderStatus.Submitted, order.Status);
         _mockOrderRepository.Verify(r => r.SaveOrderAsync(order), Times.Once);
+        _mockNotificationService.Verify(
+            service => service.CreateReservationUpdateNotificationAsync(
+                "customer-1",
+                reservationId,
+                "Restaurant confirmed a dish in your pre-order.",
+                "ord-1"),
+            Times.Once);
     }
 
     [Theory]
@@ -164,6 +186,7 @@ public class OrderServiceTests
         var reservationId = reservation.Id;
         var dishToCancelId = "dish-1";
         reservation.WaiterId = callerId;
+        reservation.CustomerId = "customer-1";
         reservation.StartTime = DateTime.UtcNow.AddHours(1);
         order.OrderId = "ord-1";
         order.Status = OrderStatus.Created;
@@ -175,12 +198,26 @@ public class OrderServiceTests
 
         _mockReservationRepository.Setup(r => r.GetReservationByIdAsync(It.IsAny<string>())).ReturnsAsync(reservation);
         _mockOrderRepository.Setup(r => r.GetOrderByReservationIdAsync(It.IsAny<string>())).ReturnsAsync(order);
+        _mockNotificationService
+            .Setup(service => service.CreateReservationUpdateNotificationAsync(
+                "customer-1",
+                reservationId,
+                "Restaurant declined a dish in your pre-order.",
+                "ord-1"))
+            .Returns(Task.CompletedTask);
 
         await _orderService.CancelPreOrderDishAsync(callerId, reservationId, dishToCancelId, _mockLogger.Object);
 
         Assert.Equal(OrderItemState.Canceled, order.Dishes[0].State);
         Assert.Equal(OrderStatus.Submitted, order.Status);
         _mockOrderRepository.Verify(r => r.SaveOrderAsync(order), Times.Once);
+        _mockNotificationService.Verify(
+            service => service.CreateReservationUpdateNotificationAsync(
+                "customer-1",
+                reservationId,
+                "Restaurant declined a dish in your pre-order.",
+                "ord-1"),
+            Times.Once);
     }
 
     [Theory]

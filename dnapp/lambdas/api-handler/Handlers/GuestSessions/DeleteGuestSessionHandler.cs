@@ -30,7 +30,8 @@ public class DeleteGuestSessionHandler : IApiRequestHandler
         }
 
         if (request.RequestContext?.Authorizer?.Claims == null ||
-            !request.RequestContext.Authorizer.Claims.TryGetValue("sub", out var userId))
+            !request.RequestContext.Authorizer.Claims.TryGetValue("sub", out var userId) ||
+            string.IsNullOrEmpty(userId))
         {
             return ResponseBuilder.CreateErrorResponse(401, "Unauthorized.", context.Logger);
         }
@@ -55,6 +56,18 @@ public class DeleteGuestSessionHandler : IApiRequestHandler
         catch (ActionForbiddenException ex)
         {
             return ResponseBuilder.CreateErrorResponse(403, ex.Message, context.Logger);
+        }
+        catch (GroupReservationExpiredException ex)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
+        }
+        catch (GroupReservationSubmittedException ex)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
+        }
+        catch (DuplicateOwnerSessionException ex)
+        {
+            return ResponseBuilder.CreateErrorResponse(409, ex.Message, context.Logger);
         }
         catch (ValidationException ex)
         {

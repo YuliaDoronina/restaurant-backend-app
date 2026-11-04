@@ -491,3 +491,6 @@ export/
 # Syndicate local configs
 .syndicate-config-*/
 syndicate_venv/
+
+*.github
+docs/*plans

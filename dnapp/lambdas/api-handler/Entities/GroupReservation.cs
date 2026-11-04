@@ -17,4 +17,10 @@ public class GroupReservation
 
     [DynamoDBProperty("status")]
     public GroupReservationStatus Status { get; set; }
+
+    [DynamoDBProperty("submitAttemptId")]
+    public string? SubmitAttemptId { get; set; }
+
+    [DynamoDBProperty("submitLeaseExpiresAt")]
+    public long? SubmitLeaseExpiresAt { get; set; }
 }
